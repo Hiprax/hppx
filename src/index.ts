@@ -17,6 +17,8 @@ export interface SanitizeOptions {
   mergeStrategy?: MergeStrategy;
   maxDepth?: number;
   maxKeys?: number;
+  maxArrayLength?: number;
+  maxKeyLength?: number;
   trimValues?: boolean;
   preserveNull?: boolean;
 }
@@ -27,8 +29,11 @@ export interface HppxOptions extends SanitizeOptions {
   checkBodyContentType?: "urlencoded" | "any" | "none";
   excludePaths?: string[];
   strict?: boolean;
-  onPollutionDetected?: (req: any, info: { source: RequestSource; pollutedKeys: string[] }) => void;
-  logger?: (err: unknown) => void;
+  onPollutionDetected?: (
+    req: Record<string, unknown>,
+    info: { source: RequestSource; pollutedKeys: string[] },
+  ) => void;
+  logger?: (err: Error | unknown) => void;
 }
 
 export interface SanitizedResult<T> {
@@ -47,30 +52,52 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-function sanitizeKey(key: string): string | null {
+function sanitizeKey(key: string, maxKeyLength?: number): string | null {
   /* istanbul ignore next */ if (typeof key !== "string") return null;
   if (DANGEROUS_KEYS.has(key)) return null;
   if (key.includes("\u0000")) return null;
+  // Prevent excessively long keys that could cause DoS
+  const maxLen = maxKeyLength ?? 200;
+  if (key.length > maxLen) return null;
+  // Prevent keys that are only dots or brackets (malformed) - but allow single dot as it's valid
+  if (key.length > 1 && /^[.\[\]]+$/.test(key)) return null;
   return key;
 }
 
+// Cache for parsed path segments to improve performance
+const pathSegmentCache = new Map<string, string[]>();
+
 function parsePathSegments(key: string): string[] {
+  // Check cache first
+  const cached = pathSegmentCache.get(key);
+  if (cached) return cached;
+
   // Convert bracket notation to dots, then split
   // a[b][c] -> a.b.c
   const dotted = key.replace(/\]/g, "").replace(/\[/g, ".");
-  return dotted.split(".").filter((s) => s.length > 0);
+  const result = dotted.split(".").filter((s) => s.length > 0);
+
+  // Cache the result (limit cache size)
+  if (pathSegmentCache.size < 500) {
+    pathSegmentCache.set(key, result);
+  }
+
+  return result;
 }
 
-function expandObjectPaths(obj: Record<string, unknown>): Record<string, unknown> {
+function expandObjectPaths(
+  obj: Record<string, unknown>,
+  maxKeyLength?: number,
+): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const rawKey of Object.keys(obj)) {
-    const safeKey = sanitizeKey(rawKey);
+    const safeKey = sanitizeKey(rawKey, maxKeyLength);
     if (!safeKey) continue;
-    const value = (obj as any)[rawKey];
+    const value = obj[rawKey];
 
     // Recursively expand nested objects first
     const expandedValue = isPlainObject(value)
-      ? expandObjectPaths(value as Record<string, unknown>)
+      ? expandObjectPaths(value as Record<string, unknown>, maxKeyLength)
       : value;
 
     if (safeKey.includes(".") || safeKey.includes("[")) {
@@ -85,7 +112,7 @@ function expandObjectPaths(obj: Record<string, unknown>): Record<string, unknown
   return result;
 }
 
-function setReqPropertySafe(target: any, key: string, value: unknown): void {
+function setReqPropertySafe(target: Record<string, unknown>, key: string, value: unknown): void {
   try {
     const desc = Object.getOwnPropertyDescriptor(target, key);
     if (desc && desc.configurable === false && desc.writable === false) {
@@ -111,15 +138,18 @@ function setReqPropertySafe(target: any, key: string, value: unknown): void {
   }
 }
 
-function safeDeepClone<T>(input: T): T {
+function safeDeepClone<T>(input: T, maxKeyLength?: number, maxArrayLength?: number): T {
   if (Array.isArray(input)) {
-    return input.map((v) => safeDeepClone(v)) as T;
+    // Limit array length to prevent memory exhaustion
+    const limit = maxArrayLength ?? 1000;
+    const limited = input.slice(0, limit);
+    return limited.map((v) => safeDeepClone(v, maxKeyLength, maxArrayLength)) as T;
   }
   if (isPlainObject(input)) {
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(input)) {
-      if (!sanitizeKey(k)) continue;
-      out[k] = safeDeepClone((input as Record<string, unknown>)[k]);
+      if (!sanitizeKey(k, maxKeyLength)) continue;
+      out[k] = safeDeepClone((input as Record<string, unknown>)[k], maxKeyLength, maxArrayLength);
     }
     return out as T;
   }
@@ -170,21 +200,46 @@ function normalizeWhitelist(whitelist?: string[] | string): string[] {
 function buildWhitelistHelpers(whitelist: string[]) {
   const exact = new Set(whitelist);
   const prefixes = whitelist.filter((w) => w.length > 0);
+  // Pre-build a cache for commonly checked paths for performance
+  const pathCache = new Map<string, boolean>();
+
   return {
     exact,
     prefixes,
     isWhitelistedPath(pathParts: string[]): boolean {
       if (pathParts.length === 0) return false;
       const full = pathParts.join(".");
-      if (exact.has(full)) return true;
-      // leaf match
-      const leaf = pathParts[pathParts.length - 1]!;
-      if (exact.has(leaf)) return true;
-      // prefix match (treat any listed segment as prefix of a subtree)
-      for (const p of prefixes) {
-        if (full === p || full.startsWith(p + ".")) return true;
+
+      // Check cache first for performance
+      const cached = pathCache.get(full);
+      if (cached !== undefined) return cached;
+
+      let result = false;
+
+      // Exact match
+      if (exact.has(full)) {
+        result = true;
       }
-      return false;
+      // Leaf match
+      else if (exact.has(pathParts[pathParts.length - 1]!)) {
+        result = true;
+      }
+      // Prefix match (treat any listed segment as prefix of a subtree)
+      else {
+        for (const p of prefixes) {
+          if (full === p || full.startsWith(p + ".")) {
+            result = true;
+            break;
+          }
+        }
+      }
+
+      // Cache the result (limit cache size to prevent memory issues)
+      if (pathCache.size < 1000) {
+        pathCache.set(full, result);
+      }
+
+      return result;
     },
   };
 }
@@ -194,13 +249,20 @@ function setIn(target: Record<string, unknown>, path: string[], value: unknown):
   if (path.length === 0) {
     return;
   }
-  let cur: any = target;
+  let cur: Record<string, unknown> = target;
   for (let i = 0; i < path.length - 1; i++) {
     const k = path[i]!;
-    if (!isPlainObject(cur[k])) cur[k] = {};
-    cur = cur[k];
+    // Additional prototype pollution protection
+    if (DANGEROUS_KEYS.has(k)) return;
+    if (!isPlainObject(cur[k])) {
+      // Create a new plain object to avoid pollution
+      cur[k] = {};
+    }
+    cur = cur[k] as Record<string, unknown>;
   }
   const lastKey = path[path.length - 1]!;
+  // Final check on the last key
+  if (DANGEROUS_KEYS.has(lastKey)) return;
   cur[lastKey] = value;
 }
 
@@ -209,19 +271,15 @@ function moveWhitelistedFromPolluted(
   polluted: Record<string, unknown>,
   isWhitelisted: (path: string[]) => boolean,
 ): void {
-  function walk(
-    node: Record<string, unknown>,
-    path: string[] = [],
-    parent?: Record<string, unknown>,
-  ) {
+  function walk(node: Record<string, unknown>, path: string[] = []) {
     for (const k of Object.keys(node)) {
       const v = node[k];
       const curPath = [...path, k];
       if (isPlainObject(v)) {
-        walk(v as Record<string, unknown>, curPath, node);
+        walk(v as Record<string, unknown>, curPath);
         // prune empty objects
         if (Object.keys(v as Record<string, unknown>).length === 0) {
-          delete (node as any)[k];
+          delete node[k];
         }
       } else {
         if (isWhitelisted(curPath)) {
@@ -230,7 +288,7 @@ function moveWhitelistedFromPolluted(
             seg.includes(".") ? seg.split(".") : [seg],
           );
           setIn(reqPart, normalizedPath, v);
-          delete (node as any)[k];
+          delete node[k];
         }
       }
     }
@@ -241,7 +299,16 @@ function moveWhitelistedFromPolluted(
 function detectAndReduce(
   input: Record<string, unknown>,
   opts: Required<
-    Pick<SanitizeOptions, "mergeStrategy" | "maxDepth" | "maxKeys" | "trimValues" | "preserveNull">
+    Pick<
+      SanitizeOptions,
+      | "mergeStrategy"
+      | "maxDepth"
+      | "maxKeys"
+      | "maxArrayLength"
+      | "maxKeyLength"
+      | "trimValues"
+      | "preserveNull"
+    >
   >,
 ): SanitizedResult<Record<string, unknown>> {
   let keyCount = 0;
@@ -252,13 +319,17 @@ function detectAndReduce(
     if (node === null || node === undefined) return opts.preserveNull ? node : node;
 
     if (Array.isArray(node)) {
-      const mapped = node.map((v) => processNode(v, path, depth));
+      // Limit array length to prevent DoS
+      const limit = opts.maxArrayLength ?? 1000;
+      const limitedNode = node.slice(0, limit);
+
+      const mapped = limitedNode.map((v) => processNode(v, path, depth));
       if (opts.mergeStrategy === "combine") {
         // combine: do not record pollution, but flatten using mergeValues
         return mergeValues(mapped, "combine");
       }
       // Other strategies: record pollution and reduce
-      setIn(polluted, path, safeDeepClone(node));
+      setIn(polluted, path, safeDeepClone(limitedNode, opts.maxKeyLength, opts.maxArrayLength));
       pollutedKeys.push(path.join("."));
       const reduced = mergeValues(mapped, opts.mergeStrategy);
       return reduced;
@@ -273,7 +344,7 @@ function detectAndReduce(
         if (keyCount > (opts.maxKeys ?? Number.MAX_SAFE_INTEGER)) {
           throw new Error(`Maximum key count (${opts.maxKeys}) exceeded`);
         }
-        const safeKey = sanitizeKey(rawKey);
+        const safeKey = sanitizeKey(rawKey, opts.maxKeyLength);
         if (!safeKey) continue;
         const child = (node as Record<string, unknown>)[rawKey];
         const childPath = path.concat([safeKey]);
@@ -287,7 +358,7 @@ function detectAndReduce(
     return node;
   }
 
-  const cloned = safeDeepClone(input);
+  const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength);
   const cleaned = processNode(cloned, [], 0) as Record<string, unknown>;
   return { cleaned, pollutedTree: polluted, pollutedKeys };
 }
@@ -297,13 +368,15 @@ export function sanitize<T extends Record<string, unknown>>(
   options: SanitizeOptions = {},
 ): T {
   // Normalize and expand keys prior to sanitization
-  const expandedInput = isPlainObject(input) ? expandObjectPaths(input) : input;
+  const maxKeyLength = options.maxKeyLength ?? 200;
+  const expandedInput = isPlainObject(input) ? expandObjectPaths(input, maxKeyLength) : input;
   const whitelist = normalizeWhitelist(options.whitelist);
   const { isWhitelistedPath } = buildWhitelistHelpers(whitelist);
   const {
     mergeStrategy = DEFAULT_STRATEGY,
     maxDepth = 20,
     maxKeys = 5000,
+    maxArrayLength = 1000,
     trimValues = false,
     preserveNull = true,
   } = options;
@@ -313,6 +386,8 @@ export function sanitize<T extends Record<string, unknown>>(
     mergeStrategy,
     maxDepth,
     maxKeys,
+    maxArrayLength,
+    maxKeyLength,
     trimValues,
     preserveNull,
   });
@@ -323,9 +398,66 @@ export function sanitize<T extends Record<string, unknown>>(
   return cleaned as T;
 }
 
-type ExpressLikeNext = (err?: any) => void;
+type ExpressLikeNext = (err?: unknown) => void;
+
+function validateOptions(options: HppxOptions): void {
+  if (
+    options.maxDepth !== undefined &&
+    (typeof options.maxDepth !== "number" || options.maxDepth < 1 || options.maxDepth > 100)
+  ) {
+    throw new TypeError("maxDepth must be a number between 1 and 100");
+  }
+  if (
+    options.maxKeys !== undefined &&
+    (typeof options.maxKeys !== "number" || options.maxKeys < 1)
+  ) {
+    throw new TypeError("maxKeys must be a positive number");
+  }
+  if (
+    options.maxArrayLength !== undefined &&
+    (typeof options.maxArrayLength !== "number" || options.maxArrayLength < 1)
+  ) {
+    throw new TypeError("maxArrayLength must be a positive number");
+  }
+  if (
+    options.maxKeyLength !== undefined &&
+    (typeof options.maxKeyLength !== "number" ||
+      options.maxKeyLength < 1 ||
+      options.maxKeyLength > 1000)
+  ) {
+    throw new TypeError("maxKeyLength must be a number between 1 and 1000");
+  }
+  if (
+    options.mergeStrategy !== undefined &&
+    !["keepFirst", "keepLast", "combine"].includes(options.mergeStrategy)
+  ) {
+    throw new TypeError("mergeStrategy must be 'keepFirst', 'keepLast', or 'combine'");
+  }
+  if (options.sources !== undefined && !Array.isArray(options.sources)) {
+    throw new TypeError("sources must be an array");
+  }
+  if (options.sources !== undefined) {
+    for (const source of options.sources) {
+      if (!["query", "body", "params"].includes(source)) {
+        throw new TypeError("sources must only contain 'query', 'body', or 'params'");
+      }
+    }
+  }
+  if (
+    options.checkBodyContentType !== undefined &&
+    !["urlencoded", "any", "none"].includes(options.checkBodyContentType)
+  ) {
+    throw new TypeError("checkBodyContentType must be 'urlencoded', 'any', or 'none'");
+  }
+  if (options.excludePaths !== undefined && !Array.isArray(options.excludePaths)) {
+    throw new TypeError("excludePaths must be an array");
+  }
+}
 
 export default function hppx(options: HppxOptions = {}) {
+  // Validate options on middleware creation
+  validateOptions(options);
+
   const {
     whitelist = [],
     mergeStrategy = DEFAULT_STRATEGY,
@@ -334,6 +466,8 @@ export default function hppx(options: HppxOptions = {}) {
     excludePaths = [],
     maxDepth = 20,
     maxKeys = 5000,
+    maxArrayLength = 1000,
+    maxKeyLength = 200,
     trimValues = false,
     preserveNull = true,
     strict = false,
@@ -352,7 +486,8 @@ export default function hppx(options: HppxOptions = {}) {
       const allPollutedKeys: string[] = [];
 
       for (const source of sources) {
-        /* istanbul ignore next */ if (!req || typeof req !== "object") break;
+        /* istanbul ignore next */
+        if (!req || typeof req !== "object") break;
         if (req[source] === undefined) continue;
 
         if (source === "body") {
@@ -364,11 +499,11 @@ export default function hppx(options: HppxOptions = {}) {
         if (!isPlainObject(part)) continue;
 
         // Preprocess: expand dotted and bracketed keys into nested objects
-        const expandedPart = expandObjectPaths(part);
+        const expandedPart = expandObjectPaths(part, maxKeyLength);
 
         const pollutedKey = `${source}Polluted`;
         const processedKey = `__hppxProcessed_${source}`;
-        const hasProcessedBefore = Boolean((req as any)[processedKey]);
+        const hasProcessedBefore = Boolean(req[processedKey]);
 
         if (!hasProcessedBefore) {
           // First pass for this request part: reduce arrays and collect polluted
@@ -376,6 +511,8 @@ export default function hppx(options: HppxOptions = {}) {
             mergeStrategy,
             maxDepth,
             maxKeys,
+            maxArrayLength,
+            maxKeyLength,
             trimValues,
             preserveNull,
           });
@@ -384,10 +521,14 @@ export default function hppx(options: HppxOptions = {}) {
 
           // Attach polluted object (always present as {} when source processed)
           setReqPropertySafe(req, pollutedKey, pollutedTree);
-          (req as any)[processedKey] = true;
+          req[processedKey] = true;
 
           // Apply whitelist now: move whitelisted arrays back
-          moveWhitelistedFromPolluted(req[source], req[pollutedKey], isWhitelistedPath);
+          const sourceData = req[source];
+          const pollutedData = req[pollutedKey];
+          if (isPlainObject(sourceData) && isPlainObject(pollutedData)) {
+            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath);
+          }
 
           if (pollutedKeys.length > 0) {
             anyPollutionDetected = true;
@@ -395,7 +536,11 @@ export default function hppx(options: HppxOptions = {}) {
           }
         } else {
           // Subsequent middleware: only put back whitelisted entries
-          moveWhitelistedFromPolluted(req[source], req[pollutedKey], isWhitelistedPath);
+          const sourceData = req[source];
+          const pollutedData = req[pollutedKey];
+          if (isPlainObject(sourceData) && isPlainObject(pollutedData)) {
+            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath);
+          }
           // pollution already accounted for in previous pass
         }
       }
@@ -403,10 +548,22 @@ export default function hppx(options: HppxOptions = {}) {
       if (anyPollutionDetected) {
         if (onPollutionDetected) {
           try {
-            onPollutionDetected(req, {
-              source: "query",
-              pollutedKeys: allPollutedKeys,
-            });
+            // Determine which sources had pollution
+            for (const source of sources) {
+              const pollutedKey = `${source}Polluted`;
+              const pollutedData = req[pollutedKey];
+              if (pollutedData && Object.keys(pollutedData).length > 0) {
+                const sourcePollutedKeys = allPollutedKeys.filter((k) =>
+                  k.startsWith(`${source}.`),
+                );
+                if (sourcePollutedKeys.length > 0) {
+                  onPollutionDetected(req, {
+                    source: source,
+                    pollutedKeys: sourcePollutedKeys,
+                  });
+                }
+              }
+            }
           } catch (_) {
             /* ignore user callback errors */
           }
@@ -423,14 +580,23 @@ export default function hppx(options: HppxOptions = {}) {
 
       return next();
     } catch (err) {
+      // Enhanced error handling with detailed logging
+      const error = err instanceof Error ? err : new Error(String(err));
+
       if (logger) {
         try {
-          logger(err);
-        } catch (_) {
-          /* noop */
+          logger(error);
+        } catch (logErr) {
+          // If custom logger fails, use console.error as fallback in development
+          if (process.env.NODE_ENV !== "production") {
+            console.error("[hppx] Logger failed:", logErr);
+            console.error("[hppx] Original error:", error);
+          }
         }
       }
-      return next(err);
+
+      // Pass error to next middleware for proper error handling
+      return next(error);
     }
   };
 }

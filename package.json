@@ -1,6 +1,6 @@
 {
   "name": "hppx",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
   "license": "MIT",
   "author": "Hiprax",
@@ -47,6 +47,18 @@
     "lint": "eslint \"{src,tests}/**/*.{ts,tsx}\"",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\""
   },
+  "keywords": [
+    "hpp",
+    "http",
+    "parameter",
+    "pollution",
+    "protection",
+    "middleware",
+    "typescript",
+    "nodejs",
+    "express",
+    "security"
+  ],
   "devDependencies": {
     "@types/express": "^5.0.5",
     "@types/jest": "^30.0.0",

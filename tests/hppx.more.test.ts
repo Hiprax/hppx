@@ -19,16 +19,14 @@ describe("hppx - additional edge cases and branches", () => {
     return app;
   }
 
-  it("mergeStrategy default branch behaves like keepLast for invalid value", async () => {
-    const app = appWith({ mergeStrategy: "weird" as any });
-    const res = await request(app).get("/t?x=1&x=2");
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      query: { x: "2" },
-      queryPolluted: { x: ["1", "2"] },
-      body: {},
-      bodyPolluted: {},
-    });
+  it("mergeStrategy validation rejects invalid values", () => {
+    // Options validation now throws on invalid merge strategy
+    expect(() => {
+      appWith({ mergeStrategy: "weird" as any });
+    }).toThrow(TypeError);
+    expect(() => {
+      appWith({ mergeStrategy: "weird" as any });
+    }).toThrow("mergeStrategy must be");
   });
 
   it("excludePaths with non-matching pattern does not exclude", async () => {
@@ -106,10 +104,23 @@ describe("hppx - additional edge cases and branches", () => {
     });
   });
 
-  it("sanitize removes null-char keys and keeps dot-only keys literal", () => {
+  it("sanitize removes null-char keys and malformed keys", () => {
     const { sanitize } = require("../src/index");
-    const cleaned = sanitize({ ["a\u0000b"]: 1, ["."]: "v" } as any, { mergeStrategy: "keepLast" });
-    expect(cleaned).toEqual({ ["."]: "v" });
+    const cleaned = sanitize({ ["a\u0000b"]: 1, ["..."]: "v", normal: "ok" } as any, {
+      mergeStrategy: "keepLast",
+    });
+    // Null-byte key removed, malformed key (...) removed, normal key kept
+    expect(cleaned).toEqual({ normal: "ok" });
+    expect(cleaned["a\u0000b"]).toBeUndefined();
+    expect(cleaned["..."]).toBeUndefined();
+  });
+
+  it("sanitize allows single dot as valid key", () => {
+    const { sanitize } = require("../src/index");
+    const cleaned = sanitize({ ["."]: "v", normal: "ok" } as any, { mergeStrategy: "keepLast" });
+    // Single dot is valid and should be kept
+    expect(cleaned["."]).toBe("v");
+    expect(cleaned.normal).toBe("ok");
   });
 
   it("whitelist prefix applies to entire subtree", async () => {

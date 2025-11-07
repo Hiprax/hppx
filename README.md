@@ -3,18 +3,23 @@
 🔐 **Superior HTTP Parameter Pollution protection middleware** for Node.js/Express, written in TypeScript. It sanitizes `req.query`, `req.body`, and `req.params`, blocks prototype-pollution keys, supports nested whitelists, multiple merge strategies, and plays nicely with stacked middlewares.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.8.3-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-16+-green.svg)](https://nodejs.org/)
 
 ## Features
 
-- Array merging strategies: `keepFirst`, `keepLast` (default), `combine`
-- Safe-by-default: blocks `__proto__`, `prototype`, `constructor`
-- Nested whitelist with dot-notation and leaf matching
-- Records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
-- Works with multiple middlewares on different routes (whitelists applied incrementally)
-- DoS-guards: `maxDepth`, `maxKeys`
-- Fully typed API and helpers (`sanitize`)
+- **Multiple merge strategies**: `keepFirst`, `keepLast` (default), `combine`
+- **Enhanced security**:
+  - Blocks dangerous keys: `__proto__`, `prototype`, `constructor`
+  - Prevents null-byte injection in keys
+  - Validates key lengths to prevent DoS attacks
+  - Limits array sizes to prevent memory exhaustion
+- **Flexible whitelisting**: Nested whitelist with dot-notation and leaf matching
+- **Pollution tracking**: Records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
+- **Multi-middleware support**: Works with multiple middlewares on different routes (whitelists applied incrementally)
+- **DoS protection**: `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
+- **Performance optimized**: Path caching for improved performance
+- **Fully typed API**: TypeScript-first with comprehensive type definitions and helper functions (`sanitize`)
 
 ## 📦 Installation
 
@@ -37,7 +42,7 @@ app.use(
     whitelist: ["tags", "user.roles", "ids"],
     mergeStrategy: "keepLast",
     sources: ["query", "body"],
-  })
+  }),
 );
 
 app.get("/search", (req, res) => {
@@ -56,16 +61,33 @@ app.get("/search", (req, res) => {
 
 Creates an Express-compatible middleware. Applies sanitization to each selected source and exposes `*.Polluted` objects.
 
-Key options:
+#### Key Options
+
+**Whitelist & Strategy:**
 
 - `whitelist?: string[]` — keys allowed as arrays; supports dot-notation; leaf matches too
 - `mergeStrategy?: 'keepFirst'|'keepLast'|'combine'` — how to reduce arrays when not whitelisted
-- `sources?: Array<'query'|'body'|'params'>` — which request parts to sanitize
+
+**Source Selection:**
+
+- `sources?: Array<'query'|'body'|'params'>` — which request parts to sanitize (default: all)
 - `checkBodyContentType?: 'urlencoded'|'any'|'none'` — when to process `req.body` (default: `urlencoded`)
-- `excludePaths?: string[]` — exclude specific paths (supports `*` suffix)
-- `maxDepth?: number` and `maxKeys?: number` — DoS protections
-- `strict?: boolean` — if pollution detected, immediately respond 400
-- `onPollutionDetected?: (req, info) => void` — callback on detection
+- `excludePaths?: string[]` — exclude specific paths (supports `*` wildcard suffix)
+
+**Security Limits (DoS Protection):**
+
+- `maxDepth?: number` — maximum object nesting depth (default: 20, max: 100)
+- `maxKeys?: number` — maximum number of keys to process (default: 5000)
+- `maxArrayLength?: number` — maximum array length (default: 1000)
+- `maxKeyLength?: number` — maximum key string length (default: 200, max: 1000)
+
+**Additional Options:**
+
+- `trimValues?: boolean` — trim string values (default: false)
+- `preserveNull?: boolean` — preserve null values (default: true)
+- `strict?: boolean` — if pollution detected, immediately respond with 400 error
+- `onPollutionDetected?: (req, info) => void` — callback on pollution detection
+- `logger?: (err: Error) => void` — custom error logger
 
 ### named export: `sanitize(input, options)`
 
@@ -83,39 +105,106 @@ app.use(hppx({ strict: true }));
 
 ```ts
 app.use(express.json());
-app.use(hppx({ checkBodyContentType: 'any' }));
+app.use(hppx({ checkBodyContentType: "any" }));
 ```
 
 - Exclude specific paths (supports `*` suffix):
 
 ```ts
-app.use(hppx({ excludePaths: ['/public', '/assets*'] }));
+app.use(hppx({ excludePaths: ["/public", "/assets*"] }));
 ```
 
 - Use the sanitizer directly:
 
 ```ts
-import { sanitize } from 'hppx';
+import { sanitize } from "hppx";
 
 const clean = sanitize(payload, {
-  whitelist: ['user.tags'],
-  mergeStrategy: 'keepFirst',
+  whitelist: ["user.tags"],
+  mergeStrategy: "keepFirst",
 });
 ```
 
-## Notes
+## Security Best Practices
 
-- Arrays are reduced by default; whitelisted paths are preserved as arrays.
-- Dangerous keys like `__proto__`, `prototype`, `constructor` are removed.
-- DoS protections are available via `maxDepth` and `maxKeys`.
+### Input Validation
+
+Always combine HPP protection with additional input validation:
+
+- Use schema validation libraries (e.g., Joi, Yup, Zod)
+- Validate data types and ranges after sanitization
+- Never trust user input, even after sanitization
+
+### Configuration Recommendations
+
+For production environments, consider these settings:
+
+```ts
+app.use(
+  hppx({
+    maxDepth: 10, // Lower depth for typical use cases
+    maxKeys: 1000, // Reasonable limit for most requests
+    maxArrayLength: 100, // Prevent large array attacks
+    maxKeyLength: 100, // Shorter keys for most applications
+    strict: true, // Return 400 on pollution attempts
+    onPollutionDetected: (req, info) => {
+      // Log security events for monitoring
+      securityLogger.warn("HPP detected", {
+        ip: req.ip,
+        path: req.path,
+        pollutedKeys: info.pollutedKeys,
+      });
+    },
+  }),
+);
+```
+
+### What HPP Protects Against
+
+- **Parameter pollution**: Duplicate parameters causing unexpected behavior
+- **Prototype pollution**: Attacks via `__proto__`, `constructor`, `prototype`
+- **DoS attacks**: Excessive nesting, too many keys, huge arrays
+- **Null-byte injection**: Keys containing null characters (`\u0000`)
+
+### What HPP Does NOT Protect Against
+
+HPP is not a complete security solution. You still need:
+
+- **SQL injection protection**: Use parameterized queries
+- **XSS protection**: Sanitize output, use CSP headers
+- **CSRF protection**: Use CSRF tokens
+- **Authentication/Authorization**: Validate user permissions
+- **Rate limiting**: Prevent brute-force attacks
 
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
+## Changelog
+
+### v0.1.1 (Security & Performance Update)
+
+- **Security Enhancements:**
+  - Added `maxArrayLength` to prevent memory exhaustion attacks
+  - Added `maxKeyLength` to prevent long key DoS attacks
+  - Enhanced prototype pollution protection in nested operations
+  - Fixed validation of malformed keys (null bytes, bracket/dot-only keys)
+  - Added comprehensive options validation with helpful error messages
+- **Bug Fixes:**
+  - Fixed `onPollutionDetected` callback receiving correct source information
+  - Improved error handling with proper error propagation
+- **Performance:**
+  - Added path caching for faster whitelist checks
+  - Added path segment caching to reduce parsing overhead
+  - Optimized repeated sanitization operations
+- **Developer Experience:**
+  - Improved TypeScript types and removed unnecessary `any` types
+  - Enhanced error messages and logging
+  - Added comprehensive test suite for security features
+
 ## 🔗 Links
 
-- [NPM Package](https://www.npmjs.com/package/@hiprax/hppx)
+- [NPM Package](https://www.npmjs.com/package/hppx)
 - [GitHub Repository](https://github.com/Hiprax/hppx)
 - [Issue Tracker](https://github.com/Hiprax/hppx/issues)
 
