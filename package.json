@@ -1,0 +1,70 @@
+{
+  "name": "hppx",
+  "version": "0.1.0",
+  "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
+  "license": "MIT",
+  "author": "Hiprax",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hiprax/hppx"
+  },
+  "homepage": "https://github.com/Hiprax/hppx#readme",
+  "bugs": {
+    "url": "https://github.com/Hiprax/hppx/issues"
+  },
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=16"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rimraf dist",
+    "dev": "tsup --watch",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:watch": "jest --watch",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"{src,tests}/**/*.{ts,tsx}\"",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\""
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.10.0",
+    "@types/supertest": "^6.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.46.3",
+    "@typescript-eslint/parser": "^8.46.3",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "express": "^5.1.0",
+    "jest": "^30.2.0",
+    "patch-package": "^8.0.1",
+    "prettier": "^3.6.2",
+    "rimraf": "^6.1.0",
+    "supertest": "^7.1.4",
+    "ts-jest": "^29.4.5",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3"
+  }
+}
