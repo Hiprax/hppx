@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.2 Change log
+
+- **Added CHANGELOG.md:** to keep track of changes
+
 ## v0.1.1 (Security & Performance Update)
 
 - **Security Enhancements:**
