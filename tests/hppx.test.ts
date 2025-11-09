@@ -8,8 +8,10 @@ function buildApp(opts?: Parameters<typeof hppx>[0]) {
     app.use(express.urlencoded({ extended: true }));
     app.use(express.json());
   }
-  if (!opts) app.use(hppx());
-  else app.use(hppx(opts));
+  // Disable logging in tests by default to keep output clean
+  const testOpts = opts ? { logPollution: false, ...opts } : { logPollution: false };
+  if (!opts) app.use(hppx(testOpts));
+  else app.use(hppx(testOpts));
 
   const includeQuery = opts?.sources ? opts.sources.includes("query" as any) : true;
   const includeBody = opts?.sources ? opts.sources.includes("body" as any) : true;
@@ -30,9 +32,9 @@ function buildApp(opts?: Parameters<typeof hppx>[0]) {
 
   // route tree for multi-middleware tests
   const router = express.Router();
-  router.use(hppx({ whitelist: "b" }));
+  router.use(hppx({ whitelist: "b", logPollution: false }));
   const sub = express.Router();
-  sub.use(hppx({ whitelist: ["b", "c"] }));
+  sub.use(hppx({ whitelist: ["b", "c"], logPollution: false }));
   sub.get("/", handler);
   app.use("/x", router);
   router.use("/y", sub);
@@ -55,9 +57,7 @@ describe("hppx - query handling", () => {
 
   it("handles two same parameters with different values (keep last)", async () => {
     const app = buildApp();
-    const res = await request(app).get(
-      "/search?firstname=John&firstname=Alice"
-    );
+    const res = await request(app).get("/search?firstname=John&firstname=Alice");
     expect(res.body).toEqual({
       query: { firstname: "Alice" },
       queryPolluted: { firstname: ["John", "Alice"] },
@@ -68,9 +68,7 @@ describe("hppx - query handling", () => {
 
   it("mixed parameters", async () => {
     const app = buildApp();
-    const res = await request(app).get(
-      "/search?title=PhD&firstname=John&firstname=Alice&age=40"
-    );
+    const res = await request(app).get("/search?title=PhD&firstname=John&firstname=Alice&age=40");
     expect(res.body).toEqual({
       query: { title: "PhD", firstname: "Alice", age: "40" },
       queryPolluted: { firstname: ["John", "Alice"] },
@@ -81,9 +79,7 @@ describe("hppx - query handling", () => {
 
   it("no pollution", async () => {
     const app = buildApp();
-    const res = await request(app).get(
-      "/search?title=PhD&firstname=Alice&age=40"
-    );
+    const res = await request(app).get("/search?title=PhD&firstname=Alice&age=40");
     expect(res.body).toEqual({
       query: { title: "PhD", firstname: "Alice", age: "40" },
       queryPolluted: {},
@@ -105,9 +101,7 @@ describe("hppx - query handling", () => {
 
   it("checkQuery=false leaves arrays", async () => {
     const app = buildApp({ sources: ["body", "params" as any] });
-    const res = await request(app).get(
-      "/search?title=PhD&firstname=John&firstname=Alice&age=40"
-    );
+    const res = await request(app).get("/search?title=PhD&firstname=John&firstname=Alice&age=40");
     expect(res.body).toEqual({
       query: { title: "PhD", firstname: ["John", "Alice"], age: "40" },
       body: {},
@@ -117,7 +111,7 @@ describe("hppx - query handling", () => {
   it("whitelist one parameter", async () => {
     const app = buildApp({ whitelist: "firstname" });
     const res = await request(app).get(
-      "/search?title=PhD&firstname=John&firstname=Alice&age=40&age=41"
+      "/search?title=PhD&firstname=John&firstname=Alice&age=40&age=41",
     );
     expect(res.body).toEqual({
       query: { title: "PhD", firstname: ["John", "Alice"], age: "41" },
@@ -170,7 +164,7 @@ describe("hppx - body handling", () => {
 
   it("no body parser", async () => {
     const app = express();
-    app.use(hppx());
+    app.use(hppx({ logPollution: false }));
     app.post("/search", (req, res) => {
       res.json({
         query: req.query || {},
@@ -203,7 +197,7 @@ describe("hppx - nested and strategies", () => {
   it("nested whitelist by dot path", async () => {
     const app = buildApp({ whitelist: ["user.tags"] });
     const res = await request(app).get(
-      "/search?user.tags=1&user.tags=2&user.name=Ann&user.name=Bob"
+      "/search?user.tags=1&user.tags=2&user.name=Ann&user.name=Bob",
     );
     expect(res.body).toEqual({
       query: { user: { tags: ["1", "2"], name: "Bob" } },

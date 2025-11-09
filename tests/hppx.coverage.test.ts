@@ -18,7 +18,7 @@ describe("hppx - Coverage for Edge Cases", () => {
         next();
       });
 
-      app.use(hppx());
+      app.use(hppx({ logPollution: false }));
 
       app.get("/test", (req: any, res) => {
         // The property should remain unchanged
@@ -33,11 +33,41 @@ describe("hppx - Coverage for Edge Cases", () => {
     test("handles assignment fallback when defineProperty fails", async () => {
       const app = express();
 
-      // Middleware will try to set queryPolluted, which should work via fallback
-      app.use(hppx());
+      // Create a scenario where defineProperty might fail but assignment works
+      app.use((req: any, _res, next) => {
+        // Make Object.defineProperty potentially problematic for a specific property
+        const originalDefineProperty = Object.defineProperty;
+        let callCount = 0;
+
+        Object.defineProperty = function <T>(
+          obj: T,
+          prop: PropertyKey,
+          descriptor: PropertyDescriptor & ThisType<any>,
+        ): T {
+          // Fail the first few defineProperty calls to force fallback to direct assignment
+          if (
+            obj === req &&
+            (prop === "queryPolluted" || prop === "bodyPolluted") &&
+            callCount < 2
+          ) {
+            callCount++;
+            throw new Error("defineProperty blocked");
+          }
+          return originalDefineProperty.call(Object, obj, prop, descriptor) as T;
+        };
+
+        next();
+
+        // Restore after middleware runs
+        setTimeout(() => {
+          Object.defineProperty = originalDefineProperty;
+        }, 0);
+      });
+
+      app.use(hppx({ logPollution: false }));
 
       app.get("/test", (req, res) => {
-        // queryPolluted should be set even if defineProperty path is skipped
+        // queryPolluted should be set via fallback assignment (lines 136-137)
         res.json({
           hasQueryPolluted: typeof req.queryPolluted !== "undefined",
           query: req.query,
@@ -52,14 +82,20 @@ describe("hppx - Coverage for Edge Cases", () => {
 
   describe("mergeValues default case", () => {
     test("uses default branch when strategy is unrecognized internally", () => {
-      // This tests the default case in the switch statement
-      // Even though we validate options, we test the internal default
+      // This tests the default case in the switch statement (line 174)
+      // We need to pass an invalid strategy to hit the default case
       const input = { x: [1, 2, 3] };
 
-      // Using keepLast, but internally testing the default fallback
-      const result = sanitize(input, { mergeStrategy: "keepLast" });
+      // Cast to any to bypass TypeScript validation and test internal default
+      const result = sanitize(input, { mergeStrategy: "invalid" as any });
 
       // Should behave like keepLast (default case returns last value)
+      expect(result.x).toBe(3);
+    });
+
+    test("keepLast explicitly uses its case branch", () => {
+      const input = { x: [1, 2, 3] };
+      const result = sanitize(input, { mergeStrategy: "keepLast" });
       expect(result.x).toBe(3);
     });
   });
@@ -67,7 +103,7 @@ describe("hppx - Coverage for Edge Cases", () => {
   describe("Whitelist leaf matching", () => {
     test("matches leaf node in nested path", async () => {
       const app = express();
-      app.use(hppx({ whitelist: ["tags"] })); // Leaf name only
+      app.use(hppx({ whitelist: ["tags"], logPollution: false })); // Leaf name only
 
       app.get("/test", (req, res) => {
         res.json({ query: req.query });
@@ -84,7 +120,7 @@ describe("hppx - Coverage for Edge Cases", () => {
 
     test("leaf matching with multiple nested levels", async () => {
       const app = express();
-      app.use(hppx({ whitelist: ["id"] })); // Matches any leaf named "id"
+      app.use(hppx({ whitelist: ["id"], logPollution: false })); // Matches any leaf named "id"
 
       app.get("/test", (req, res) => {
         res.json({ query: req.query });
@@ -259,7 +295,7 @@ describe("hppx - Coverage for Edge Cases", () => {
         next();
       });
 
-      app.use(hppx());
+      app.use(hppx({ logPollution: false }));
 
       app.get("/test", (req, res) => {
         res.json({ query: req.query });

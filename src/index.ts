@@ -34,6 +34,8 @@ export interface HppxOptions extends SanitizeOptions {
     info: { source: RequestSource; pollutedKeys: string[] },
   ) => void;
   logger?: (err: Error | unknown) => void;
+  /** Enable logging when pollution is detected (default: true) */
+  logPollution?: boolean;
 }
 
 export interface SanitizedResult<T> {
@@ -473,6 +475,7 @@ export default function hppx(options: HppxOptions = {}) {
     strict = false,
     onPollutionDetected,
     logger,
+    logPollution = true,
   } = options;
 
   const whitelistArr = normalizeWhitelist(whitelist);
@@ -546,6 +549,21 @@ export default function hppx(options: HppxOptions = {}) {
       }
 
       if (anyPollutionDetected) {
+        // Log pollution detection if enabled
+        if (logPollution) {
+          const logMessage = `[hppx] HTTP Parameter Pollution detected - ${allPollutedKeys.length} parameter(s) affected: ${allPollutedKeys.join(", ")}`;
+          if (logger) {
+            try {
+              logger(logMessage);
+            } catch (_) {
+              // Fallback to console.warn if logger fails
+              console.warn(logMessage);
+            }
+          } else {
+            console.warn(logMessage);
+          }
+        }
+
         if (onPollutionDetected) {
           try {
             // Determine which sources had pollution

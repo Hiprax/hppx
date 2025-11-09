@@ -22,7 +22,7 @@ describe("hppx - Security Features", () => {
     test("handles very large arrays in middleware", async () => {
       const app = express();
       app.use(express.json());
-      app.use(hppx({ maxArrayLength: 10, checkBodyContentType: "any" }));
+      app.use(hppx({ maxArrayLength: 10, checkBodyContentType: "any", logPollution: false }));
       app.post("/test", (req, res) => res.json({ body: req.body }));
 
       const largeArray = Array.from({ length: 100 }, (_, i) => i);
@@ -49,7 +49,7 @@ describe("hppx - Security Features", () => {
 
     test("respects custom maxKeyLength", async () => {
       const app = express();
-      app.use(hppx({ maxKeyLength: 10 }));
+      app.use(hppx({ maxKeyLength: 10, logPollution: false }));
       app.get("/test", (req, res) => res.json({ query: req.query }));
 
       const longKey = "a".repeat(20);
@@ -88,7 +88,7 @@ describe("hppx - Security Features", () => {
 
     test("blocks nested dangerous keys in setIn", async () => {
       const app = express();
-      app.use(hppx());
+      app.use(hppx({ logPollution: false }));
       app.get("/test", (req, res) => res.json({ query: req.query }));
 
       const res = await request(app)
@@ -191,7 +191,7 @@ describe("hppx - Security Features", () => {
 
     test("error is passed to next middleware", async () => {
       const app = express();
-      app.use(hppx({ maxDepth: 1 }));
+      app.use(hppx({ maxDepth: 1, logPollution: false }));
 
       // Error handler must come after the route
       app.get("/test", (req, res) => res.json({ ok: true }));
@@ -215,6 +215,7 @@ describe("hppx - Security Features", () => {
       app.use(
         hppx({
           onPollutionDetected: (req, info) => calls.push(info),
+          logPollution: false, // Disable logging for cleaner test output
         }),
       );
       app.get("/test", (req, res) => res.json({}));
@@ -233,6 +234,7 @@ describe("hppx - Security Features", () => {
       app.use(
         hppx({
           onPollutionDetected: (req, info) => calls.push(info),
+          logPollution: false,
         }),
       );
       app.post("/test", (req, res) => res.json({}));
@@ -254,6 +256,7 @@ describe("hppx - Security Features", () => {
       app.use(
         hppx({
           onPollutionDetected: (req, info) => calls.push(info),
+          logPollution: false,
         }),
       );
       app.post("/test", (req, res) => res.json({}));
@@ -267,6 +270,99 @@ describe("hppx - Security Features", () => {
       const sources = calls.map((c) => c.source);
       expect(sources).toContain("query");
       expect(sources).toContain("body");
+    });
+  });
+
+  describe("Pollution logging", () => {
+    const originalWarn = console.warn;
+
+    afterEach(() => {
+      console.warn = originalWarn;
+    });
+
+    test("logs pollution to console.warn by default", async () => {
+      const warnings: any[] = [];
+      console.warn = jest.fn((...args) => warnings.push(args));
+
+      const app = express();
+      app.use(hppx());
+      app.get("/test", (req, res) => res.json({}));
+
+      await request(app).get("/test?x=1&x=2");
+
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings[0][0]).toContain("[hppx]");
+      expect(warnings[0][0]).toContain("HTTP Parameter Pollution detected");
+      expect(warnings[0][0]).toContain("query.x");
+    });
+
+    test("uses custom logger when provided", async () => {
+      const logs: any[] = [];
+      const customLogger = jest.fn((msg) => logs.push(msg));
+
+      const app = express();
+      app.use(hppx({ logger: customLogger }));
+      app.get("/test", (req, res) => res.json({}));
+
+      await request(app).get("/test?a=1&a=2&b=3&b=4");
+
+      expect(customLogger).toHaveBeenCalled();
+      expect(logs.length).toBeGreaterThan(0);
+      expect(logs[0]).toContain("[hppx]");
+      expect(logs[0]).toContain("HTTP Parameter Pollution detected");
+    });
+
+    test("falls back to console.warn when custom logger fails", async () => {
+      const warnings: any[] = [];
+      console.warn = jest.fn((...args) => warnings.push(args));
+
+      const failingLogger = jest.fn(() => {
+        throw new Error("Logger failed");
+      });
+
+      const app = express();
+      app.use(hppx({ logger: failingLogger }));
+      app.get("/test", (req, res) => res.json({}));
+
+      await request(app).get("/test?x=1&x=2");
+
+      expect(failingLogger).toHaveBeenCalled();
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings[0][0]).toContain("[hppx]");
+    });
+
+    test("respects logPollution: false", async () => {
+      const warnings: any[] = [];
+      console.warn = jest.fn((...args) => warnings.push(args));
+
+      const app = express();
+      app.use(hppx({ logPollution: false }));
+      app.get("/test", (req, res) => res.json({}));
+
+      await request(app).get("/test?x=1&x=2");
+
+      // Should not log anything
+      const hppxWarnings = warnings.filter((w) =>
+        w.some((arg: any) => typeof arg === "string" && arg.includes("[hppx]")),
+      );
+      expect(hppxWarnings.length).toBe(0);
+    });
+
+    test("logs multiple polluted parameters correctly", async () => {
+      const logs: any[] = [];
+      const customLogger = jest.fn((msg) => logs.push(msg));
+
+      const app = express();
+      app.use(hppx({ logger: customLogger }));
+      app.get("/test", (req, res) => res.json({}));
+
+      await request(app).get("/test?a=1&a=2&b=3&b=4&c=5&c=6");
+
+      expect(logs.length).toBeGreaterThan(0);
+      expect(logs[0]).toContain("3 parameter(s) affected");
+      expect(logs[0]).toContain("query.a");
+      expect(logs[0]).toContain("query.b");
+      expect(logs[0]).toContain("query.c");
     });
   });
 });

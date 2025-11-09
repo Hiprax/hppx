@@ -29,9 +29,39 @@ npm install hppx
 
 ## Usage
 
-```ts
+### ESM (ES Modules)
+
+```typescript
 import express from "express";
 import hppx from "hppx";
+
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+app.use(
+  hppx({
+    whitelist: ["tags", "user.roles", "ids"],
+    mergeStrategy: "keepLast",
+    sources: ["query", "body"],
+  }),
+);
+
+app.get("/search", (req, res) => {
+  res.json({
+    query: req.query,
+    queryPolluted: req.queryPolluted ?? {},
+    body: req.body ?? {},
+    bodyPolluted: req.bodyPolluted ?? {},
+  });
+});
+```
+
+### CommonJS
+
+```javascript
+const express = require("express");
+const hppx = require("hppx");
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -87,7 +117,8 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 - `preserveNull?: boolean` — preserve null values (default: true)
 - `strict?: boolean` — if pollution detected, immediately respond with 400 error
 - `onPollutionDetected?: (req, info) => void` — callback on pollution detection
-- `logger?: (err: Error) => void` — custom error logger
+- `logger?: (err: Error | string) => void` — custom logger for errors and pollution warnings
+- `logPollution?: boolean` — enable automatic logging when pollution is detected (default: true)
 
 ### named export: `sanitize(input, options)`
 
@@ -95,29 +126,60 @@ Sanitize an arbitrary object using the same rules as the middleware. Useful for 
 
 ## Advanced usage
 
-- Strict mode (respond 400 on pollution):
+### Strict mode (respond 400 on pollution)
 
-```ts
+```typescript
 app.use(hppx({ strict: true }));
 ```
 
-- Process JSON bodies too:
+### Process JSON bodies too
 
-```ts
+```typescript
 app.use(express.json());
 app.use(hppx({ checkBodyContentType: "any" }));
 ```
 
-- Exclude specific paths (supports `*` suffix):
+### Exclude specific paths (supports `*` suffix)
 
-```ts
+```typescript
 app.use(hppx({ excludePaths: ["/public", "/assets*"] }));
 ```
 
-- Use the sanitizer directly:
+### Custom logging for pollution detection
 
-```ts
+```typescript
+// Use your application's logger
+app.use(
+  hppx({
+    logger: (message) => {
+      if (typeof message === "string") {
+        myLogger.warn(message); // Pollution warnings
+      } else {
+        myLogger.error(message); // Errors
+      }
+    },
+  }),
+);
+
+// Disable automatic pollution logging
+app.use(hppx({ logPollution: false }));
+```
+
+### Use the sanitizer directly
+
+```typescript
 import { sanitize } from "hppx";
+
+const clean = sanitize(payload, {
+  whitelist: ["user.tags"],
+  mergeStrategy: "keepFirst",
+});
+```
+
+**CommonJS:**
+
+```javascript
+const { sanitize } = require("hppx");
 
 const clean = sanitize(payload, {
   whitelist: ["user.tags"],

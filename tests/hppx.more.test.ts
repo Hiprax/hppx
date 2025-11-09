@@ -7,7 +7,9 @@ describe("hppx - additional edge cases and branches", () => {
     const app = express();
     app.use(express.urlencoded({ extended: true }));
     app.use(express.json());
-    app.use(hppx(opts || {}));
+    // Disable logging by default in tests
+    const testOpts = { logPollution: false, ...(opts || {}) };
+    app.use(hppx(testOpts));
     app.get("/t", (req, res) =>
       res.json({
         query: req.query || {},
@@ -144,7 +146,7 @@ describe("hppx - additional edge cases and branches", () => {
       (req as any).body = "literal";
       next();
     });
-    app.use(hppx({ sources: ["body" as any], checkBodyContentType: "any" }));
+    app.use(hppx({ sources: ["body" as any], checkBodyContentType: "any", logPollution: false }));
     app.post("/t", (req, res) =>
       res.json({
         body: (req as any).body,

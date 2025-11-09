@@ -13,4 +13,7 @@ export default defineConfig({
       js: format === "esm" ? ".mjs" : ".cjs",
     };
   },
+  // Ensure proper CommonJS default export
+  cjsInterop: true,
+  splitting: false,
 });

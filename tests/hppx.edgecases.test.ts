@@ -5,7 +5,7 @@ import hppx, { sanitize } from "../src/index";
 describe("hppx - strict, excludePaths, callbacks", () => {
   test("strict mode returns 400 with polluted keys", async () => {
     const app = express();
-    app.use(hppx({ strict: true }));
+    app.use(hppx({ strict: true, logPollution: false }));
     app.get("/a", (req, res) => res.json({ ok: true }));
     const res = await request(app).get("/a?x=1&x=2&y=3");
     expect(res.status).toBe(400);
@@ -15,7 +15,7 @@ describe("hppx - strict, excludePaths, callbacks", () => {
 
   test("excludePaths exact and wildcard", async () => {
     const app = express();
-    app.use(hppx({ excludePaths: ["/public", "/assets*"] }));
+    app.use(hppx({ excludePaths: ["/public", "/assets*"], logPollution: false }));
     app.get("/public", (req, res) => res.json({ query: req.query }));
     app.get("/assets/img", (req, res) => res.json({ query: req.query }));
     const r1 = await request(app).get("/public?x=1&x=2");
@@ -31,6 +31,7 @@ describe("hppx - strict, excludePaths, callbacks", () => {
       hppx({
         onPollutionDetected: (_req, info) => calls.push({ type: "cb", info }),
         logger: (err) => calls.push({ type: "log", err: String(err) }),
+        logPollution: false,
       }),
     );
     app.get("/b", (req, res) => res.json({}));
@@ -43,7 +44,7 @@ describe("hppx - content type handling", () => {
   test("body processed when checkBodyContentType=any", async () => {
     const app = express();
     app.use(express.json());
-    app.use(hppx({ checkBodyContentType: "any" }));
+    app.use(hppx({ checkBodyContentType: "any", logPollution: false }));
     app.post("/json", (req, res) =>
       res.json({ body: req.body, bodyPolluted: req.bodyPolluted || {} }),
     );
@@ -62,6 +63,7 @@ describe("hppx - limits and safety", () => {
       hppx({
         maxDepth: 2,
         logger: () => {},
+        logPollution: false,
       }),
     );
     app.get("/d", (req, res) => res.json({ ok: true }));
@@ -73,7 +75,7 @@ describe("hppx - limits and safety", () => {
 
   test("maxKeys throws on huge input", async () => {
     const app = express();
-    app.use(hppx({ maxKeys: 5 }));
+    app.use(hppx({ maxKeys: 5, logPollution: false }));
     app.get("/e", (req, res) => res.json({ ok: true }));
     const q: Record<string, string> = {};
     for (let i = 0; i < 10; i++) q["k" + i] = String(i);
@@ -83,7 +85,7 @@ describe("hppx - limits and safety", () => {
 
   test("dangerous keys are stripped", async () => {
     const app = express();
-    app.use(hppx());
+    app.use(hppx({ logPollution: false }));
     app.get("/f", (req, res) => res.json({ query: req.query }));
     const res = await request(app).get("/f?__proto__=x&constructor=1&safe=ok");
     expect(res.body).toEqual({ query: { safe: "ok" } });

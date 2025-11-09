@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.4 (CommonJS Support & Pollution Logging)
+
+- **Fixed:** CommonJS default export - no longer requires `.default` for require()
+- **Added:** `cjsInterop: true` in tsup config for proper CommonJS compatibility
+- **Added:** Automatic logging when pollution is detected (default: enabled)
+- **Added:** `logPollution` option to control pollution logging (default: true)
+- **Enhanced:** Logger now handles both errors and pollution warnings
+- **Documentation:** Added CommonJS examples throughout README
+- **Documentation:** Added custom logging examples
+
 ## v0.1.3 (Build Configuration Fix)
 
 - **Fixed:** Build configuration to generate correct file extensions (.mjs for ESM, .cjs for CJS)
