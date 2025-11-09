@@ -1,9 +1,14 @@
 # Changelog
 
+## v0.1.5 (CommonJS Default Export Fix)
+
+- **Fixed:** CommonJS default export now works correctly without requiring `.default`
+- **Enhanced:** Added esbuild footer to properly merge default and named exports in CommonJS
+- **Note:** Users can now use `require("hppx")()` directly instead of `require("hppx").default()`
+
 ## v0.1.4 (CommonJS Support & Pollution Logging)
 
-- **Fixed:** CommonJS default export - no longer requires `.default` for require()
-- **Added:** `cjsInterop: true` in tsup config for proper CommonJS compatibility
+- **Added:** Basic CommonJS support with `cjsInterop: true`
 - **Added:** Automatic logging when pollution is detected (default: enabled)
 - **Added:** `logPollution` option to control pollution logging (default: true)
 - **Enhanced:** Logger now handles both errors and pollution warnings

@@ -16,4 +16,13 @@ export default defineConfig({
   // Ensure proper CommonJS default export
   cjsInterop: true,
   splitting: false,
+  esbuildOptions(options, context) {
+    // Add a footer to CommonJS output to ensure require("hppx") works without .default
+    // while preserving named exports
+    if (context.format === "cjs") {
+      options.footer = {
+        js: "if (module.exports.default) { module.exports = Object.assign(module.exports.default, module.exports); }",
+      };
+    }
+  },
 });
