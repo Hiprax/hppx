@@ -1,8 +1,15 @@
 # Changelog
 
-## v0.1.2 Change log
+## v0.1.3 (Build Configuration Fix)
 
-- **Added CHANGELOG.md:** to keep track of changes
+- **Fixed:** Build configuration to generate correct file extensions (.mjs for ESM, .cjs for CJS)
+- **Fixed:** Module resolution errors when importing the package
+- **Changed:** Updated tsup config to use `outExtension` for proper file naming
+- **Testing:** All 81 tests passing with 97.09% statement coverage
+
+## v0.1.2 (Changelog Added)
+
+- **Added:** CHANGELOG.md to keep track of changes
 
 ## v0.1.1 (Security & Performance Update)
 
