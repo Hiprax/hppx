@@ -1,10 +1,15 @@
 # Changelog
 
-## v0.1.6 (CommonJS IntelliSense Fix)
+## v0.1.7 (CommonJS IntelliSense Fix - Namespace Pattern)
 
-- **Fixed:** TypeScript IntelliSense now works properly for CommonJS usage
-- **Added:** Custom `index.d.cts` type definitions for proper CommonJS type support
-- **Note:** Users can now use `require("hppx")()` directly with full type support
+- **Fixed:** TypeScript IntelliSense now properly works for `const hppx = require("hppx")` without `.default`
+- **Changed:** Updated `index.d.cts` to use function + namespace declaration pattern
+- **Note:** Full IntelliSense support for both the main function and named exports in CommonJS
+
+## v0.1.6 (CommonJS IntelliSense Attempt)
+
+- **Attempted:** TypeScript IntelliSense fix (incomplete)
+- **Added:** Initial custom `index.d.cts` type definitions
 
 ## v0.1.5 (CommonJS Default Export Fix)
 
