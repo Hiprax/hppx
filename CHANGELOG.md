@@ -1,10 +1,15 @@
 # Changelog
 
-## v0.1.7 (CommonJS IntelliSense Fix - Namespace Pattern)
+## v0.1.8 (CommonJS IntelliSense - Exports Map Fix)
 
-- **Fixed:** TypeScript IntelliSense now properly works for `const hppx = require("hppx")` without `.default`
-- **Changed:** Updated `index.d.cts` to use function + namespace declaration pattern
-- **Note:** Full IntelliSense support for both the main function and named exports in CommonJS
+- **Fixed:** TypeScript now correctly uses `index.d.cts` for CommonJS via proper exports map
+- **Changed:** Updated `package.json` exports to specify separate type paths for ESM and CommonJS
+- **Note:** Full IntelliSense now works for `require("hppx")` without `.default`
+
+## v0.1.7 (CommonJS IntelliSense - Namespace Pattern)
+
+- **Added:** Function + namespace declaration pattern in `index.d.cts`
+- **Note:** Required exports map fix in v0.1.8 to activate
 
 ## v0.1.6 (CommonJS IntelliSense Attempt)
 
