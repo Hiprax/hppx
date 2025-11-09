@@ -1,6 +1,6 @@
 {
   "name": "hppx",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
   "license": "MIT",
   "author": "Hiprax",
@@ -25,6 +25,7 @@
   },
   "files": [
     "dist",
+    "src/index.d.cts",
     "README.md",
     "LICENSE"
   ],

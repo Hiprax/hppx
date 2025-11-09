@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.6 (CommonJS IntelliSense Fix)
+
+- **Fixed:** TypeScript IntelliSense now works properly for CommonJS usage
+- **Added:** Custom `index.d.cts` type definitions for proper CommonJS type support
+- **Note:** Users can now use `require("hppx")()` directly with full type support
+
 ## v0.1.5 (CommonJS Default Export Fix)
 
 - **Fixed:** CommonJS default export now works correctly without requiring `.default`

@@ -91,6 +91,8 @@ pids/
 test-results/
 playwright-report/
 test-results.xml
+test-cjs-types.js
+test-cjs-types.ts
 
 # Temporary files
 tmp/

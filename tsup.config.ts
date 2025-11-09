@@ -3,7 +3,9 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: ["src/index.ts"],
   clean: true,
-  dts: true,
+  dts: {
+    resolve: true,
+  },
   sourcemap: true,
   format: ["esm", "cjs"],
   target: "es2020",
@@ -24,5 +26,14 @@ export default defineConfig({
         js: "if (module.exports.default) { module.exports = Object.assign(module.exports.default, module.exports); }",
       };
     }
+  },
+  async onSuccess() {
+    // Copy custom CommonJS type definitions
+    const fs = await import("fs");
+    const path = await import("path");
+    const src = path.join(process.cwd(), "src/index.d.cts");
+    const dest = path.join(process.cwd(), "dist/index.d.cts");
+    await fs.promises.copyFile(src, dest);
+    console.log("✓ Copied custom CommonJS type definitions");
   },
 });
