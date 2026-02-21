@@ -1,33 +1,43 @@
 # hppx
 
-🔐 **Superior HTTP Parameter Pollution protection middleware** for Node.js/Express, written in TypeScript. It sanitizes `req.query`, `req.body`, and `req.params`, blocks prototype-pollution keys, supports nested whitelists, multiple merge strategies, and plays nicely with stacked middlewares.
+**Superior HTTP Parameter Pollution protection middleware** for Node.js/Express, written in TypeScript. It sanitizes `req.query`, `req.body`, and `req.params`, blocks prototype-pollution keys, supports nested whitelists, multiple merge strategies, and plays nicely with stacked middlewares.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-16+-green.svg)](https://nodejs.org/)
+[![npm version](https://img.shields.io/npm/v/hppx)](https://www.npmjs.com/package/hppx)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A516-green.svg)](https://nodejs.org/)
+[![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-brightgreen.svg)](#)
+
+---
 
 ## Features
 
-- **Multiple merge strategies**: `keepFirst`, `keepLast` (default), `combine`
-- **Enhanced security**:
+- **Zero runtime dependencies** — minimal attack surface and bundle size
+- **Multiple merge strategies** — `keepFirst`, `keepLast` (default), `combine`
+- **Enhanced security:**
   - Blocks dangerous keys: `__proto__`, `prototype`, `constructor`
   - Prevents null-byte injection in keys
+  - Rejects malformed keys (dot/bracket-only patterns)
   - Validates key lengths to prevent DoS attacks
   - Limits array sizes to prevent memory exhaustion
-- **Flexible whitelisting**: Nested whitelist with dot-notation and leaf matching
-- **Pollution tracking**: Records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
-- **Multi-middleware support**: Works with multiple middlewares on different routes (whitelists applied incrementally)
-- **DoS protection**: `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
-- **Performance optimized**: Path caching for improved performance
-- **Fully typed API**: TypeScript-first with comprehensive type definitions and helper functions (`sanitize`)
+- **Flexible whitelisting** — nested whitelist with dot-notation and leaf matching
+- **Pollution tracking** — records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
+- **Multi-middleware support** — works with multiple middlewares on different routes (whitelists applied incrementally)
+- **DoS protection** — `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
+- **Performance optimized** — path caching and Set-based lookups for fast whitelist checks
+- **Fully typed API** — TypeScript-first with comprehensive type definitions for both ESM and CommonJS
 
-## 📦 Installation
+---
+
+## Installation
 
 ```bash
 npm install hppx
 ```
 
-## Usage
+---
+
+## Quick Start
 
 ### ESM (ES Modules)
 
@@ -85,87 +95,64 @@ app.get("/search", (req, res) => {
 });
 ```
 
+---
+
 ## API
 
-### default export: `hppx(options?: HppxOptions)`
+### Default Export: `hppx(options?: HppxOptions)`
 
-Creates an Express-compatible middleware. Applies sanitization to each selected source and exposes `*.Polluted` objects.
+Creates an Express-compatible middleware. Applies sanitization to each selected source and exposes `*.Polluted` objects on the request.
 
-#### Key Options
+> **Note:** Invalid options throw a `TypeError` at middleware creation time, not at request time. This ensures misconfiguration is caught early.
+
+#### Options
 
 **Whitelist & Strategy:**
 
-- `whitelist?: string[]` — keys allowed as arrays; supports dot-notation; leaf matches too
-- `mergeStrategy?: 'keepFirst'|'keepLast'|'combine'` — how to reduce arrays when not whitelisted
+| Option          | Type                                     | Default      | Description                                                                                                                                                                     |
+| --------------- | ---------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `whitelist`     | `string[] \| string`                     | `[]`         | Keys allowed to remain as arrays. Supports dot-notation (`"user.tags"`) and leaf matching (`"tags"` matches any path ending in `tags`).                                         |
+| `mergeStrategy` | `'keepFirst' \| 'keepLast' \| 'combine'` | `'keepLast'` | How to reduce duplicate/array parameters when not whitelisted. `keepFirst` takes the first value, `keepLast` takes the last, `combine` flattens all values into a single array. |
 
 **Source Selection:**
 
-- `sources?: Array<'query'|'body'|'params'>` — which request parts to sanitize (default: all)
-- `checkBodyContentType?: 'urlencoded'|'any'|'none'` — when to process `req.body` (default: `urlencoded`)
-- `excludePaths?: string[]` — exclude specific paths (supports `*` wildcard suffix)
+| Option                 | Type                                   | Default                       | Description                                                                                                                                           |
+| ---------------------- | -------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sources`              | `Array<'query' \| 'body' \| 'params'>` | `['query', 'body', 'params']` | Which request parts to sanitize.                                                                                                                      |
+| `checkBodyContentType` | `'urlencoded' \| 'any' \| 'none'`      | `'urlencoded'`                | When to process `req.body`. `urlencoded` only processes URL-encoded bodies, `any` processes all content types, `none` skips body processing entirely. |
+| `excludePaths`         | `string[]`                             | `[]`                          | Paths to exclude from sanitization. Supports `*` wildcard suffix (e.g., `"/assets*"`).                                                                |
 
 **Security Limits (DoS Protection):**
 
-- `maxDepth?: number` — maximum object nesting depth (default: 20, max: 100)
-- `maxKeys?: number` — maximum number of keys to process (default: 5000)
-- `maxArrayLength?: number` — maximum array length (default: 1000)
-- `maxKeyLength?: number` — maximum key string length (default: 200, max: 1000)
+| Option           | Type     | Default | Range    | Description                                                                           |
+| ---------------- | -------- | ------- | -------- | ------------------------------------------------------------------------------------- |
+| `maxDepth`       | `number` | `20`    | 1 - 100  | Maximum object nesting depth. Exceeding this throws an error passed to `next()`.      |
+| `maxKeys`        | `number` | `5000`  | >= 1     | Maximum number of keys to process. Exceeding this throws an error passed to `next()`. |
+| `maxArrayLength` | `number` | `1000`  | >= 1     | Maximum array length. Arrays are truncated before processing.                         |
+| `maxKeyLength`   | `number` | `200`   | 1 - 1000 | Maximum key string length. Longer keys are silently dropped.                          |
 
-**Additional Options:**
+**Behavior & Callbacks:**
 
-- `trimValues?: boolean` — trim string values (default: false)
-- `preserveNull?: boolean` — preserve null values (default: true)
-- `strict?: boolean` — if pollution detected, immediately respond with 400 error
-- `onPollutionDetected?: (req, info) => void` — callback on pollution detection
-- `logger?: (err: Error | string) => void` — custom logger for errors and pollution warnings
-- `logPollution?: boolean` — enable automatic logging when pollution is detected (default: true)
+| Option                | Type                              | Default | Description                                                                                                                                                                                              |
+| --------------------- | --------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trimValues`          | `boolean`                         | `false` | Trim whitespace from string values.                                                                                                                                                                      |
+| `preserveNull`        | `boolean`                         | `true`  | Preserve `null` values in the output.                                                                                                                                                                    |
+| `strict`              | `boolean`                         | `false` | Immediately respond with HTTP 400 when pollution is detected. Response includes `error`, `message`, `pollutedParameters`, and `code` (`"HPP_DETECTED"`) fields.                                          |
+| `onPollutionDetected` | `(req, info) => void`             | —       | Callback fired on pollution detection. Called **once per polluted source** (e.g., fires twice if both query and body are polluted). `info` contains `{ source: RequestSource, pollutedKeys: string[] }`. |
+| `logger`              | `(err: Error \| unknown) => void` | —       | Custom logger for errors and pollution warnings. Receives `string` for pollution warnings and `Error` for caught errors. Falls back to `console.warn`/`console.error` if the logger throws.              |
+| `logPollution`        | `boolean`                         | `true`  | Enable automatic logging when pollution is detected.                                                                                                                                                     |
 
-### named export: `sanitize(input, options)`
+---
 
-Sanitize an arbitrary object using the same rules as the middleware. Useful for manual usage.
-
-## Advanced usage
-
-### Strict mode (respond 400 on pollution)
-
-```typescript
-app.use(hppx({ strict: true }));
-```
-
-### Process JSON bodies too
+### Named Export: `sanitize(input, options?)`
 
 ```typescript
-app.use(express.json());
-app.use(hppx({ checkBodyContentType: "any" }));
+function sanitize<T extends Record<string, unknown>>(input: T, options?: SanitizeOptions): T;
 ```
 
-### Exclude specific paths (supports `*` suffix)
+Sanitize a plain object using the same rules as the middleware. Returns only the cleaned object (polluted data is not returned — use the middleware if you need `req.queryPolluted` etc.).
 
-```typescript
-app.use(hppx({ excludePaths: ["/public", "/assets*"] }));
-```
-
-### Custom logging for pollution detection
-
-```typescript
-// Use your application's logger
-app.use(
-  hppx({
-    logger: (message) => {
-      if (typeof message === "string") {
-        myLogger.warn(message); // Pollution warnings
-      } else {
-        myLogger.error(message); // Errors
-      }
-    },
-  }),
-);
-
-// Disable automatic pollution logging
-app.use(hppx({ logPollution: false }));
-```
-
-### Use the sanitizer directly
+**ESM:**
 
 ```typescript
 import { sanitize } from "hppx";
@@ -187,33 +174,112 @@ const clean = sanitize(payload, {
 });
 ```
 
-## Security Best Practices
+---
 
-### Input Validation
+### Exported Types
 
-Always combine HPP protection with additional input validation:
+All types are available for both ESM and CommonJS consumers:
 
-- Use schema validation libraries (e.g., Joi, Yup, Zod)
-- Validate data types and ranges after sanitization
-- Never trust user input, even after sanitization
+```typescript
+import type {
+  RequestSource, // "query" | "body" | "params"
+  MergeStrategy, // "keepFirst" | "keepLast" | "combine"
+  SanitizeOptions, // Options for sanitize()
+  HppxOptions, // Full middleware options (extends SanitizeOptions)
+  SanitizedResult, // { cleaned, pollutedTree, pollutedKeys }
+} from "hppx";
+```
 
-### Configuration Recommendations
+### Exported Constants
 
-For production environments, consider these settings:
+```typescript
+import { DANGEROUS_KEYS, DEFAULT_SOURCES, DEFAULT_STRATEGY } from "hppx";
 
-```ts
+DANGEROUS_KEYS; // Set<string> — {"__proto__", "prototype", "constructor"}
+DEFAULT_SOURCES; // ["query", "body", "params"]
+DEFAULT_STRATEGY; // "keepLast"
+```
+
+---
+
+## Advanced Usage
+
+### Strict Mode (Respond 400 on Pollution)
+
+```typescript
+app.use(hppx({ strict: true }));
+
+// Polluted requests receive:
+// {
+//   "error": "Bad Request",
+//   "message": "HTTP Parameter Pollution detected",
+//   "pollutedParameters": ["query.x"],
+//   "code": "HPP_DETECTED"
+// }
+```
+
+### Process JSON Bodies Too
+
+```typescript
+app.use(express.json());
+app.use(hppx({ checkBodyContentType: "any" }));
+```
+
+### Exclude Specific Paths
+
+```typescript
+app.use(hppx({ excludePaths: ["/public", "/assets*"] }));
+```
+
+### Custom Logging
+
+```typescript
+// Use your application's logger
 app.use(
   hppx({
-    maxDepth: 10, // Lower depth for typical use cases
-    maxKeys: 1000, // Reasonable limit for most requests
-    maxArrayLength: 100, // Prevent large array attacks
-    maxKeyLength: 100, // Shorter keys for most applications
-    strict: true, // Return 400 on pollution attempts
+    logger: (msg) => {
+      if (typeof msg === "string") {
+        myLogger.warn(msg); // Pollution warnings
+      } else {
+        myLogger.error(msg); // Errors
+      }
+    },
+  }),
+);
+
+// Disable automatic pollution logging
+app.use(hppx({ logPollution: false }));
+```
+
+### Multi-Middleware Stacking
+
+hppx supports incremental whitelisting across multiple middleware instances. Each subsequent middleware applies its own whitelist to the already-collected polluted data:
+
+```typescript
+// Global middleware — whitelist "a"
+app.use(hppx({ whitelist: ["a"] }));
+
+// Route-level middleware — additionally whitelist "b" and "c"
+const router = express.Router();
+router.use(hppx({ whitelist: ["b", "c"] }));
+
+// On this route, "a", "b", and "c" are all allowed as arrays
+router.get("/data", (req, res) => {
+  res.json({ query: req.query });
+});
+
+app.use("/api", router);
+```
+
+### Pollution Detection Callback
+
+```typescript
+app.use(
+  hppx({
     onPollutionDetected: (req, info) => {
-      // Log security events for monitoring
+      // Called once per polluted source (query, body, params)
       securityLogger.warn("HPP detected", {
-        ip: req.ip,
-        path: req.path,
+        source: info.source,
         pollutedKeys: info.pollutedKeys,
       });
     },
@@ -221,33 +287,65 @@ app.use(
 );
 ```
 
-### What HPP Protects Against
+---
 
-- **Parameter pollution**: Duplicate parameters causing unexpected behavior
-- **Prototype pollution**: Attacks via `__proto__`, `constructor`, `prototype`
-- **DoS attacks**: Excessive nesting, too many keys, huge arrays
-- **Null-byte injection**: Keys containing null characters (`\u0000`)
+## Security
 
-### What HPP Does NOT Protect Against
+### What hppx Protects Against
 
-HPP is not a complete security solution. You still need:
+| Threat                   | Protection                                                                         |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| **Parameter pollution**  | Duplicate parameters are reduced to a single value via the chosen merge strategy   |
+| **Prototype pollution**  | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level |
+| **DoS via deep nesting** | `maxDepth` limit throws error on excessive nesting                                 |
+| **DoS via key flooding** | `maxKeys` limit throws error when key count is exceeded                            |
+| **DoS via large arrays** | `maxArrayLength` truncates arrays before processing                                |
+| **DoS via long keys**    | `maxKeyLength` silently drops excessively long keys                                |
+| **Null-byte injection**  | Keys containing `\u0000` are silently dropped                                      |
+| **Malformed keys**       | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped          |
 
-- **SQL injection protection**: Use parameterized queries
-- **XSS protection**: Sanitize output, use CSP headers
-- **CSRF protection**: Use CSRF tokens
-- **Authentication/Authorization**: Validate user permissions
-- **Rate limiting**: Prevent brute-force attacks
+### Production Configuration
 
-## 📄 License
+```typescript
+app.use(
+  hppx({
+    maxDepth: 10,
+    maxKeys: 1000,
+    maxArrayLength: 100,
+    maxKeyLength: 100,
+    strict: true,
+    onPollutionDetected: (req, info) => {
+      securityLogger.warn("HPP detected", {
+        ip: req.ip,
+        path: req.path,
+        source: info.source,
+        pollutedKeys: info.pollutedKeys,
+      });
+    },
+  }),
+);
+```
+
+### What hppx Does NOT Protect Against
+
+hppx is not a complete security solution. You still need:
+
+- **SQL injection protection** — use parameterized queries
+- **XSS protection** — sanitize output, use CSP headers
+- **CSRF protection** — use CSRF tokens
+- **Authentication/Authorization** — validate user permissions
+- **Rate limiting** — prevent brute-force attacks
+- **Input validation** — use schema validation libraries (Joi, Yup, Zod) alongside hppx
+
+---
+
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## 🔗 Links
+## Links
 
 - [NPM Package](https://www.npmjs.com/package/hppx)
 - [GitHub Repository](https://github.com/Hiprax/hppx)
 - [Issue Tracker](https://github.com/Hiprax/hppx/issues)
-
----
-
-### **Made with ❤️ for secure applications**
+- [Changelog](CHANGELOG.md)

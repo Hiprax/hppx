@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import hppx from "../src/index";
+import hppx, { sanitize } from "../src/index";
 
 describe("hppx - additional edge cases and branches", () => {
   function appWith(opts?: Parameters<typeof hppx>[0]) {
@@ -107,7 +107,6 @@ describe("hppx - additional edge cases and branches", () => {
   });
 
   it("sanitize removes null-char keys and malformed keys", () => {
-    const { sanitize } = require("../src/index");
     const cleaned = sanitize({ ["a\u0000b"]: 1, ["..."]: "v", normal: "ok" } as any, {
       mergeStrategy: "keepLast",
     });
@@ -118,7 +117,6 @@ describe("hppx - additional edge cases and branches", () => {
   });
 
   it("sanitize allows single dot as valid key", () => {
-    const { sanitize } = require("../src/index");
     const cleaned = sanitize({ ["."]: "v", normal: "ok" } as any, { mergeStrategy: "keepLast" });
     // Single dot is valid and should be kept
     expect(cleaned["."]).toBe("v");
@@ -159,7 +157,6 @@ describe("hppx - additional edge cases and branches", () => {
   });
 
   it("combine strategy flattens arrays-of-arrays", () => {
-    const { sanitize } = require("../src/index");
     const cleaned = sanitize({ x: [[1], [2]] } as any, { mergeStrategy: "combine" });
     expect(cleaned).toEqual({ x: [1, 2] });
   });

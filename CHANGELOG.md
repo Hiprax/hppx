@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.10 (Test Coverage Improvements)
+
+- **Improved:** Test coverage now meets 95%+ on all metrics (100% statements, 95.09% branches, 100% functions, 100% lines)
+- **Added:** 10 new meaningful test cases targeting previously uncovered code paths:
+  - `safeDeepClone` array depth limiting and dangerous key filtering in nested arrays
+  - `safeDeepClone` circular reference handling for arrays and objects inside arrays
+  - `setIn` dangerous last-key protection (`__proto__`, `constructor` as final path segments)
+  - `processNode` undefined value handling
+  - Middleware error wrapping for non-Error thrown values
+  - Body content-type absence handling
+  - Whitelist path cache hit across multiple request sources
+- **Fixed:** Replaced `require()` calls with proper ESM imports in `hppx.more.test.ts`
+- **Added:** `/* istanbul ignore */` comments on 7 verified-unreachable defensive code branches with justification
+- **Testing:** 111 total tests passing across 6 test suites
+
+## v0.1.9 (Security & Bug Fix Audit)
+
+- **Fixed:** `preserveNull: false` was a complete no-op — both ternary branches returned the same value (`src/index.ts:321`)
+- **Fixed:** `expandObjectPaths` had no recursion depth limit, allowing stack overflow before `maxDepth` check
+- **Fixed:** `safeDeepClone` had no recursion depth limit, same stack overflow risk
+- **Fixed:** No circular reference protection in `expandObjectPaths` or `safeDeepClone` — added `WeakSet`-based cycle detection
+- **Fixed:** `sanitize()` standalone function now validates options (same as `hppx()` middleware)
+- **Fixed:** `validateOptions` now checks `logger` and `onPollutionDetected` are functions when provided
+- **Refactored:** Extracted `validateSanitizeOptions()` for shared validation between `sanitize()` and `hppx()`
+- **Testing:** Added 20 new tests covering all fixes (101 total tests passing)
+
 ## v0.1.8 (CommonJS IntelliSense - Exports Map Fix)
 
 - **Fixed:** TypeScript now correctly uses `index.d.cts` for CommonJS via proper exports map

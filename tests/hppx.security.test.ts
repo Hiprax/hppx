@@ -157,6 +157,18 @@ describe("hppx - Security Features", () => {
       expect(() => hppx({ excludePaths: "path" as any })).toThrow(TypeError);
     });
 
+    test("throws on invalid logger", () => {
+      expect(() => hppx({ logger: "not a function" as any })).toThrow(TypeError);
+      expect(() => hppx({ logger: 42 as any })).toThrow(TypeError);
+      expect(() => hppx({ logger: {} as any })).toThrow(TypeError);
+    });
+
+    test("throws on invalid onPollutionDetected", () => {
+      expect(() => hppx({ onPollutionDetected: "not a function" as any })).toThrow(TypeError);
+      expect(() => hppx({ onPollutionDetected: true as any })).toThrow(TypeError);
+      expect(() => hppx({ onPollutionDetected: [] as any })).toThrow(TypeError);
+    });
+
     test("accepts valid options", () => {
       expect(() => hppx({ maxDepth: 10 })).not.toThrow();
       expect(() => hppx({ maxKeys: 100 })).not.toThrow();
@@ -166,6 +178,10 @@ describe("hppx - Security Features", () => {
       expect(() => hppx({ sources: ["query", "body"] })).not.toThrow();
       expect(() => hppx({ checkBodyContentType: "any" })).not.toThrow();
       expect(() => hppx({ excludePaths: ["/public"] })).not.toThrow();
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      expect(() => hppx({ logger: () => {} })).not.toThrow();
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      expect(() => hppx({ onPollutionDetected: () => {} })).not.toThrow();
     });
   });
 
@@ -270,6 +286,83 @@ describe("hppx - Security Features", () => {
       const sources = calls.map((c) => c.source);
       expect(sources).toContain("query");
       expect(sources).toContain("body");
+    });
+  });
+
+  describe("Circular reference protection", () => {
+    test("handles circular references in sanitize without stack overflow", () => {
+      const obj: any = { a: "value" };
+      obj.self = obj;
+      // Should not throw a stack overflow error
+      const result = sanitize(obj);
+      expect(result.a).toBe("value");
+      // The circular ref should be replaced with {}
+      expect(result.self).toEqual({});
+    });
+
+    test("handles indirect circular references", () => {
+      const a: any = { name: "a" };
+      const b: any = { name: "b", ref: a };
+      a.ref = b;
+      const result = sanitize(a);
+      expect(result.name).toBe("a");
+      expect(result.ref.name).toBe("b");
+      // The back-reference should be cut off
+      expect(result.ref.ref).toEqual({});
+    });
+
+    test("circular references in middleware do not crash", async () => {
+      const app = express();
+      app.use(express.json());
+      app.use(hppx({ checkBodyContentType: "any", logPollution: false }));
+      app.post("/test", (req, res) => res.json({ ok: true }));
+
+      // We can't send a circular ref over HTTP, but we can test
+      // that the middleware processes deeply nested objects without crashing
+      const deep: any = {};
+      let cur = deep;
+      for (let i = 0; i < 15; i++) {
+        cur.nested = {};
+        cur = cur.nested;
+      }
+      cur.value = "leaf";
+
+      const res = await request(app)
+        .post("/test")
+        .set("content-type", "application/json")
+        .send(deep);
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe("Depth limits in expandObjectPaths and safeDeepClone", () => {
+    test("expandObjectPaths respects maxDepth via sanitize", () => {
+      // Create deeply nested input that exceeds maxDepth during expand
+      const deep: any = {};
+      let cur = deep;
+      for (let i = 0; i < 5; i++) {
+        cur.level = {};
+        cur = cur.level;
+      }
+      cur.value = "leaf";
+
+      // maxDepth: 3 should throw because the nested object is 6 levels deep
+      expect(() => sanitize(deep, { maxDepth: 3 })).toThrow(/depth/i);
+    });
+
+    test("safeDeepClone respects maxDepth via detectAndReduce", () => {
+      // The middleware uses safeDeepClone internally, test via middleware
+      const app = express();
+      app.use(hppx({ maxDepth: 2, logPollution: false }));
+      app.get("/test", (req, res) => res.json({ ok: true }));
+
+      // Deep query string will trigger the depth check
+      return request(app)
+        .get("/test")
+        .query({ "a[b][c][d]": "value" })
+        .then((res) => {
+          expect(res.status).toBeGreaterThanOrEqual(500);
+        });
     });
   });
 

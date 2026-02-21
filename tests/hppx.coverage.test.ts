@@ -81,16 +81,10 @@ describe("hppx - Coverage for Edge Cases", () => {
   });
 
   describe("mergeValues default case", () => {
-    test("uses default branch when strategy is unrecognized internally", () => {
-      // This tests the default case in the switch statement (line 174)
-      // We need to pass an invalid strategy to hit the default case
+    test("sanitize rejects unrecognized mergeStrategy", () => {
+      // sanitize now validates options, so invalid strategies throw
       const input = { x: [1, 2, 3] };
-
-      // Cast to any to bypass TypeScript validation and test internal default
-      const result = sanitize(input, { mergeStrategy: "invalid" as any });
-
-      // Should behave like keepLast (default case returns last value)
-      expect(result.x).toBe(3);
+      expect(() => sanitize(input, { mergeStrategy: "invalid" as any })).toThrow(TypeError);
     });
 
     test("keepLast explicitly uses its case branch", () => {
@@ -315,6 +309,176 @@ describe("hppx - Coverage for Edge Cases", () => {
 
       expect(result.a).toBe(2);
       expect(result.b).toBe("test");
+    });
+  });
+
+  describe("safeDeepClone depth and key filtering", () => {
+    test("throws on deeply nested arrays exceeding maxDepth", () => {
+      // Arrays count toward depth in safeDeepClone but not in processNode,
+      // so deeply nested arrays specifically trigger safeDeepClone's depth check
+      const input = { a: [[[["deep"]]]] };
+      expect(() => sanitize(input, { maxDepth: 3 })).toThrow(/depth/i);
+    });
+
+    test("filters dangerous keys from objects nested inside arrays", () => {
+      // Objects inside arrays bypass expandObjectPaths (which only expands plain objects),
+      // so safeDeepClone's own key filtering is the safety net
+      const inner = Object.create(null);
+      inner["__proto__"] = "malicious";
+      inner["constructor"] = "bad";
+      inner.safe = "ok";
+
+      const result = sanitize({ items: [inner] }, { mergeStrategy: "combine" });
+
+      expect(result.items).toEqual([{ safe: "ok" }]);
+      // Dangerous keys must not appear as own properties
+      expect(Object.prototype.hasOwnProperty.call(result.items[0], "__proto__")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(result.items[0], "constructor")).toBe(false);
+    });
+
+    test("handles circular array references inside objects", () => {
+      // Circular arrays bypass expandObjectPaths (which only processes objects),
+      // so safeDeepClone's WeakSet-based circular detection is the safety net
+      const arr: any[] = [];
+      arr.push(arr); // arr[0] === arr (circular)
+
+      const result = sanitize({ items: arr }, { mergeStrategy: "combine" });
+
+      // Should not stack overflow; circular ref is replaced with empty array
+      expect(result.items).toBeDefined();
+      expect(Array.isArray(result.items)).toBe(true);
+    });
+
+    test("handles circular object references inside arrays", () => {
+      // Objects inside arrays survive expandObjectPaths without circular ref detection,
+      // so safeDeepClone's WeakSet catches circular object refs during cloning
+      const obj: any = { name: "test" };
+      obj.self = obj; // circular: obj.self === obj
+
+      const result = sanitize({ items: [obj] }, { mergeStrategy: "combine" });
+
+      // Should not stack overflow; first occurrence is cloned, circular ref → {}
+      expect(result.items).toBeDefined();
+      expect(result.items[0].name).toBe("test");
+      expect(result.items[0].self).toEqual({});
+    });
+  });
+
+  describe("setIn dangerous last key protection", () => {
+    test("blocks dangerous keys in last path segment", () => {
+      // "a.__proto__" passes sanitizeKey (not in DANGEROUS_KEYS itself),
+      // but when expanded to path ["a", "__proto__"], the last segment is blocked
+      const result = sanitize({ "a.__proto__": "malicious", "a.safe": "ok" } as any);
+
+      expect(result.a).toBeDefined();
+      expect(result.a.safe).toBe("ok");
+      // __proto__ must not be set as a property
+      expect(Object.prototype.hasOwnProperty.call(result.a, "__proto__")).toBe(false);
+    });
+
+    test("blocks constructor as last path segment", () => {
+      const result = sanitize({ "a.constructor": "malicious", "a.name": "ok" } as any);
+
+      expect(result.a).toBeDefined();
+      expect(result.a.name).toBe("ok");
+      expect(Object.prototype.hasOwnProperty.call(result.a, "constructor")).toBe(false);
+    });
+  });
+
+  describe("processNode edge cases", () => {
+    test("handles undefined values in input objects", () => {
+      const result = sanitize({ a: undefined, b: "ok", c: null } as any);
+
+      expect(result.a).toBeUndefined();
+      expect(result.b).toBe("ok");
+      expect(result.c).toBeNull();
+    });
+  });
+
+  describe("Middleware error handling for non-Error throws", () => {
+    test("wraps non-Error thrown values into Error objects", async () => {
+      const app = express();
+
+      // Define req.body as a getter that throws a string (not an Error instance)
+      // This exercises the catch block's non-Error wrapping at line 668
+      app.use((req: any, _res, next) => {
+        Object.defineProperty(req, "body", {
+          get() {
+            throw "string error thrown";
+          },
+          configurable: true,
+        });
+        next();
+      });
+
+      app.use(hppx({ sources: ["body"], checkBodyContentType: "any", logPollution: false }));
+      app.post("/test", (_req, res) => res.json({ ok: true }));
+      app.use((err: any, _req: any, res: any, _next: any) => {
+        res.status(500).json({ error: err.message });
+      });
+
+      const res = await request(app).post("/test");
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe("string error thrown");
+    });
+  });
+
+  describe("Body content-type handling edge cases", () => {
+    test("skips body processing when content-type header is absent", async () => {
+      const app = express();
+
+      // Manually set body to simulate parsed body without content-type
+      app.use((req: any, _res, next) => {
+        req.body = { x: [1, 2] };
+        next();
+      });
+
+      app.use(hppx({ logPollution: false }));
+      app.post("/test", (req, res) =>
+        res.json({
+          body: req.body,
+          bodyPolluted: (req as any).bodyPolluted || {},
+        }),
+      );
+
+      // Post without setting content-type header
+      const res = await request(app).post("/test").set("content-type", "");
+      expect(res.status).toBe(200);
+      // Body should not be processed since default checkBodyContentType is "urlencoded"
+      // and there's no urlencoded content-type
+      expect(res.body.body.x).toEqual([1, 2]);
+    });
+  });
+
+  describe("Whitelist path cache effectiveness", () => {
+    test("cache hit on repeated path lookups across multiple sources", async () => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+
+      // Single middleware with whitelist that processes both query and body
+      app.use(hppx({ whitelist: ["x"], logPollution: false }));
+      app.post("/test", (req, res) =>
+        res.json({
+          query: req.query,
+          queryPolluted: (req as any).queryPolluted || {},
+          body: req.body,
+          bodyPolluted: (req as any).bodyPolluted || {},
+        }),
+      );
+
+      // Both query and body have the same whitelisted key "x"
+      const res = await request(app)
+        .post("/test?x=1&x=2")
+        .set("content-type", "application/x-www-form-urlencoded")
+        .send("x=3&x=4");
+
+      expect(res.status).toBe(200);
+      // Both should preserve arrays due to whitelist
+      expect(res.body.query.x).toEqual(["1", "2"]);
+      expect(res.body.body.x).toEqual(["3", "4"]);
+      // Pollution should be empty since x is whitelisted
+      expect(res.body.queryPolluted).toEqual({});
+      expect(res.body.bodyPolluted).toEqual({});
     });
   });
 });

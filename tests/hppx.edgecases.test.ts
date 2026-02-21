@@ -107,4 +107,72 @@ describe("sanitize helper", () => {
     });
     expect(out).toEqual({ a: null, b: "y" });
   });
+
+  test("sanitize validates options like hppx middleware", () => {
+    expect(() => sanitize({}, { maxDepth: -1 })).toThrow(TypeError);
+    expect(() => sanitize({}, { maxDepth: 0 })).toThrow(TypeError);
+    expect(() => sanitize({}, { maxDepth: 1000 })).toThrow(TypeError);
+    expect(() => sanitize({}, { maxKeys: -1 })).toThrow(TypeError);
+    expect(() => sanitize({}, { maxArrayLength: 0 })).toThrow(TypeError);
+    expect(() => sanitize({}, { maxKeyLength: 2000 })).toThrow(TypeError);
+    expect(() => sanitize({}, { mergeStrategy: "invalid" as any })).toThrow(TypeError);
+  });
+
+  test("sanitize accepts valid options without throwing", () => {
+    expect(() => sanitize({}, { maxDepth: 10 })).not.toThrow();
+    expect(() => sanitize({}, { maxKeys: 100 })).not.toThrow();
+    expect(() => sanitize({}, { maxArrayLength: 50 })).not.toThrow();
+    expect(() => sanitize({}, { maxKeyLength: 100 })).not.toThrow();
+    expect(() => sanitize({}, { mergeStrategy: "keepFirst" })).not.toThrow();
+  });
+});
+
+describe("preserveNull behavior", () => {
+  test("preserveNull: false strips null values to undefined", () => {
+    const out = sanitize({ a: null, b: "ok" } as any, {
+      preserveNull: false,
+    });
+    expect(out.a).toBeUndefined();
+    expect(out.b).toBe("ok");
+  });
+
+  test("preserveNull: false strips nulls from array reduction", () => {
+    const out = sanitize({ a: ["x", null as any] } as any, {
+      mergeStrategy: "keepLast",
+      preserveNull: false,
+    });
+    // keepLast picks null, then preserveNull: false converts to undefined
+    expect(out.a).toBeUndefined();
+  });
+
+  test("preserveNull: false with nested objects", () => {
+    const out = sanitize({ user: { name: null, age: 30 } } as any, {
+      preserveNull: false,
+    });
+    expect(out.user.name).toBeUndefined();
+    expect(out.user.age).toBe(30);
+  });
+
+  test("preserveNull: true (default) preserves null values", () => {
+    const out = sanitize({ a: null, b: "ok" } as any, {
+      preserveNull: true,
+    });
+    expect(out.a).toBeNull();
+    expect(out.b).toBe("ok");
+  });
+
+  test("preserveNull: false in middleware integration", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(hppx({ checkBodyContentType: "any", preserveNull: false, logPollution: false }));
+    app.post("/test", (req, res) => res.json({ body: req.body }));
+    const res = await request(app)
+      .post("/test")
+      .set("content-type", "application/json")
+      .send({ a: null, b: "ok" });
+    expect(res.status).toBe(200);
+    // null should be stripped (converted to undefined, which is omitted from JSON)
+    expect(res.body.body.a).toBeUndefined();
+    expect(res.body.body.b).toBe("ok");
+  });
 });
