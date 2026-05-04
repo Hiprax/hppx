@@ -13,7 +13,9 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "resolveJsonModule": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "types": ["node", "jest"],
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src", "tests", "jest.config.ts"],
   "exclude": ["dist", "node_modules"]

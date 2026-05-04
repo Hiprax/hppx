@@ -27,13 +27,7 @@ export default defineConfig({
       };
     }
   },
-  async onSuccess() {
-    // Copy custom CommonJS type definitions
-    const fs = await import("fs");
-    const path = await import("path");
-    const src = path.join(process.cwd(), "src/index.d.cts");
-    const dest = path.join(process.cwd(), "dist/index.d.cts");
-    await fs.promises.copyFile(src, dest);
-    console.log("✓ Copied custom CommonJS type definitions");
-  },
+  // Note: tsup auto-generates both `dist/index.d.ts` and `dist/index.d.cts`
+  // from `src/index.ts`. The two files are kept in symbol-parity by
+  // `scripts/check-dts-parity.mjs`, which runs as part of `npm run prepare`.
 });

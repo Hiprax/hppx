@@ -160,4 +160,89 @@ describe("hppx - additional edge cases and branches", () => {
     const cleaned = sanitize({ x: [[1], [2]] } as any, { mergeStrategy: "combine" });
     expect(cleaned).toEqual({ x: [1, 2] });
   });
+
+  describe("Multi-middleware option precedence (documented behavior)", () => {
+    // The README "Multi-Middleware Stacking" section documents that when a
+    // subsequent hppx() runs on a source that has already been processed by an
+    // earlier instance, only the second middleware's `whitelist` is honored.
+    // All other options — including `strict` — are silently ignored. These
+    // tests pin that contract so it cannot regress unnoticed.
+
+    it("ignores strict:true on the second middleware after the first cleaned the source", async () => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(express.json());
+      // First middleware: default keepLast, NOT strict — cleans the source.
+      app.use(hppx({ logPollution: false }));
+      // Second middleware: strict:true. Per the documented contract this MUST
+      // be silently ignored because the source has already been processed; the
+      // request must NOT receive a 400 response.
+      app.use(hppx({ strict: true, logPollution: false }));
+      app.get("/multi", (req, res) =>
+        res.json({
+          query: req.query,
+          queryPolluted: (req as any).queryPolluted || {},
+        }),
+      );
+
+      const res = await request(app).get("/multi?x=1&x=2");
+      // The second middleware's strict:true was a no-op; the response is the
+      // route handler's 200 with the cleaned query.
+      expect(res.status).toBe(200);
+      expect(res.body.query).toEqual({ x: "2" });
+      expect(res.body.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+
+    it("ignores onPollutionDetected on the second middleware after the first cleaned the source", async () => {
+      const firstCalls: { source: string; pollutedKeys: string[] }[] = [];
+      const secondCalls: { source: string; pollutedKeys: string[] }[] = [];
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(express.json());
+      app.use(
+        hppx({
+          logPollution: false,
+          onPollutionDetected: (_req, info) => firstCalls.push(info),
+        }),
+      );
+      app.use(
+        hppx({
+          logPollution: false,
+          // This callback MUST NOT fire for the already-processed source.
+          onPollutionDetected: (_req, info) => secondCalls.push(info),
+        }),
+      );
+      app.get("/multi", (_req, res) => res.json({}));
+
+      await request(app).get("/multi?a=1&a=2");
+
+      expect(firstCalls.length).toBe(1);
+      expect(firstCalls[0]?.source).toBe("query");
+      // Second middleware's callback was silently dropped.
+      expect(secondCalls.length).toBe(0);
+    });
+
+    it("a subsequent middleware with a wider whitelist restores additional fields", async () => {
+      // The whitelist on the second middleware IS honored — that is the
+      // documented purpose of multi-middleware stacking. Confirm that part of
+      // the contract too, so a future change cannot accidentally drop it.
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(hppx({ whitelist: ["a"], logPollution: false }));
+      app.use(hppx({ whitelist: ["b"], logPollution: false }));
+      app.get("/multi", (req, res) =>
+        res.json({
+          query: req.query,
+          queryPolluted: (req as any).queryPolluted || {},
+        }),
+      );
+
+      const res = await request(app).get("/multi?a=1&a=2&b=3&b=4&c=5&c=6");
+      expect(res.status).toBe(200);
+      // Both whitelisted parameters preserved as arrays; non-whitelisted is reduced.
+      expect(res.body.query).toEqual({ a: ["1", "2"], b: ["3", "4"], c: "6" });
+      // Only c remains in queryPolluted.
+      expect(res.body.queryPolluted).toEqual({ c: ["5", "6"] });
+    });
+  });
 });

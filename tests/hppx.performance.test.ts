@@ -1,4 +1,4 @@
-import { sanitize } from "../src/index";
+import { sanitize, __resetPathSegmentCache } from "../src/index";
 
 describe("hppx - Performance Optimizations", () => {
   describe("Path caching", () => {
@@ -129,6 +129,94 @@ describe("hppx - Performance Optimizations", () => {
 
       // Should complete without running out of memory
       expect(cleaned).toBeDefined();
+    });
+  });
+
+  describe("Cache eviction (clear-on-full)", () => {
+    test("pathSegmentCache continues caching after a flood of unique keys", () => {
+      __resetPathSegmentCache();
+
+      // Pump well over the cache cap (500) of unique dotted keys to exercise
+      // the eviction path. After this, the cache should not be permanently
+      // disabled — it must be able to cache fresh entries again.
+      for (let i = 0; i < 1500; i++) {
+        sanitize({ [`flood_${i}.leaf`]: [1, 2] }, { mergeStrategy: "keepLast" });
+      }
+
+      // Now run a workload of repeated dotted keys; if the cache were stuck
+      // (full and never evicted), this would re-parse every key on every call.
+      // With clear-on-full, the cache is reset and starts caching the new keys
+      // on first access, making subsequent runs O(1) per parse.
+      const input = {
+        "user.profile.name": [1, 2],
+        "user.profile.email": [3, 4],
+        "user.settings.theme": [5, 6],
+      };
+
+      // Warm-up call (populates cache).
+      sanitize(input, { mergeStrategy: "keepLast" });
+
+      // Repeated calls should be fast — caching is alive again.
+      const start = Date.now();
+      for (let i = 0; i < 500; i++) {
+        sanitize(input, { mergeStrategy: "keepLast" });
+      }
+      const duration = Date.now() - start;
+
+      // Generous bound — main intent is to detect total breakage / unbounded
+      // re-parsing rather than fine-grained perf regressions.
+      expect(duration).toBeLessThan(2000);
+    });
+
+    test("pathSegmentCache parses correctly after eviction", () => {
+      __resetPathSegmentCache();
+
+      // Fill past the cap with unique single-segment keys.
+      for (let i = 0; i < 1500; i++) {
+        sanitize({ [`solo_${i}`]: [1, 2] }, { mergeStrategy: "keepLast" });
+      }
+
+      // Now feed dotted keys — these must still parse correctly.
+      const cleaned = sanitize({ "a.b.c": [1, 2], "x.y": [3, 4] }, { mergeStrategy: "keepLast" });
+      expect(cleaned).toEqual({ a: { b: { c: 2 } }, x: { y: 4 } });
+    });
+
+    test("whitelist pathCache survives a flood and stays correct", () => {
+      // Each call builds a fresh whitelist helpers instance, but within one
+      // sanitize call the same pathCache is used. Flood >1000 unique paths,
+      // then verify whitelist semantics still hold.
+      const whitelist = ["user.profile.tags"];
+      const input: Record<string, unknown> = {};
+      for (let i = 0; i < 1200; i++) {
+        input[`flood_${i}`] = [1, 2];
+      }
+      input["user.profile.tags"] = [1, 2];
+
+      const cleaned = sanitize(input, { whitelist, mergeStrategy: "keepLast" });
+      // Whitelisted path is preserved as an array.
+      expect((cleaned as any).user.profile.tags).toEqual([1, 2]);
+    });
+  });
+
+  describe("Clone-once detectAndReduce", () => {
+    test("processes a 1000-key polluted object in well under 50ms baseline", () => {
+      const input: Record<string, unknown> = {};
+      for (let i = 0; i < 1000; i++) {
+        input[`key${i}`] = [`a${i}`, `b${i}`, `c${i}`];
+      }
+
+      // Warm up to amortize first-call costs (JIT, cache misses).
+      sanitize(input, { mergeStrategy: "keepLast" });
+
+      const start = Date.now();
+      const cleaned = sanitize(input, { mergeStrategy: "keepLast" });
+      const duration = Date.now() - start;
+
+      // 1000 polluted entries should be quick. Generous bound (250ms) to keep
+      // the test deterministic across CI hardware while still catching gross
+      // regressions back to double-clone behavior.
+      expect(Object.keys(cleaned).length).toBe(1000);
+      expect(duration).toBeLessThan(250);
     });
   });
 });

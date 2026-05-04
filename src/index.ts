@@ -9,6 +9,26 @@
  * - TypeScript-first API
  */
 
+// Augment the Express Request interface with hppx-specific properties so that
+// consumers importing this package automatically get typed access to the
+// polluted-tree fields. The `declare module` block lives here (rather than in
+// a separate `.d.ts` file) so that tsup emits it into both `dist/index.d.ts`
+// and `dist/index.d.cts`, which are kept in symbol-parity by
+// `scripts/check-dts-parity.mjs`.
+//
+// The `import type` below is required for TypeScript 6.0+ DTS rollup, which no
+// longer resolves augmentation targets through transitive `@types` packages.
+// It pulls the augmentation module into scope without affecting the JS output.
+import type {} from "express-serve-static-core";
+
+declare module "express-serve-static-core" {
+  interface Request {
+    queryPolluted?: Record<string, unknown>;
+    bodyPolluted?: Record<string, unknown>;
+    paramsPolluted?: Record<string, unknown>;
+  }
+}
+
 export type RequestSource = "query" | "body" | "params";
 export type MergeStrategy = "keepFirst" | "keepLast" | "combine";
 
@@ -48,6 +68,21 @@ const DEFAULT_SOURCES: RequestSource[] = ["query", "body", "params"];
 const DEFAULT_STRATEGY: MergeStrategy = "keepLast";
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
+// Pre-compiled, ReDoS-safe character class that rejects keys containing any of:
+//   - ASCII C0 controls (U+0000..U+001F) and DEL (U+007F)
+//   - C1 controls (U+0080..U+009F)
+//   - Unicode bidirectional control characters: U+200E/U+200F (LRM/RLM),
+//     U+202A..U+202E (LRE/RLE/PDF/LRO/RLO), U+2066..U+2069 (LRI/RLI/FSI/PDI)
+//   - U+FEFF (BOM / zero-width no-break space) — typically accidental in keys
+//     and used to bypass naive key-based logic.
+// Rejecting these prevents bypass of downstream key-based logic, log injection,
+// and DB/log corruption when output is not properly quoted. The character
+// class contains no quantifiers, so it cannot trigger ReDoS.
+/* eslint-disable no-control-regex -- intentional: this regex must include control characters in order to reject them */
+const FORBIDDEN_KEY_CHARS =
+  /[\u0000-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+/* eslint-enable no-control-regex */
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object") return false;
   const proto = Object.getPrototypeOf(value);
@@ -57,7 +92,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function sanitizeKey(key: string, maxKeyLength?: number): string | null {
   /* istanbul ignore next */ if (typeof key !== "string") return null;
   if (DANGEROUS_KEYS.has(key)) return null;
-  if (key.includes("\u0000")) return null;
+  // Reject keys containing ASCII/Unicode control characters or bidirectional
+  // override characters. Subsumes the previous explicit NUL-byte check.
+  if (FORBIDDEN_KEY_CHARS.test(key)) return null;
   // Prevent excessively long keys that could cause DoS
   /* istanbul ignore next -- defensive: callers always pass maxKeyLength explicitly */
   const maxLen = maxKeyLength ?? 200;
@@ -67,9 +104,46 @@ function sanitizeKey(key: string, maxKeyLength?: number): string | null {
   return key;
 }
 
-// Cache for parsed path segments to improve performance
+// Cache for parsed path segments to improve performance.
+// Uses a clear-on-full eviction policy: when the cache reaches capacity, it is
+// cleared in its entirety so future entries can still be cached. This prevents
+// a one-shot poisoning attack where an attacker pumps unique keys into a single
+// request to permanently disable the cache for legitimate traffic.
+const PATH_SEGMENT_CACHE_LIMIT = 500;
 const pathSegmentCache = new Map<string, string[]>();
 
+/**
+ * Parse a (possibly composite) key into an array of path segments.
+ *
+ * Accepted forms (and how they're parsed):
+ *   - Dotted:           "a.b.c"        -> ["a", "b", "c"]
+ *   - Bracket:          "a[b][c]"      -> ["a", "b", "c"]
+ *   - Mixed:            "a.b[c].d"     -> ["a", "b", "c", "d"]
+ *   - Numeric brackets: "a[0][1]"      -> ["a", "0", "1"]   (indexes become string segments)
+ *   - Trailing/empty:   "a..b" / "a[]" -> ["a", "b"] / ["a"] (empty segments dropped)
+ *
+ * **The parser is intentionally lenient.** Malformed inputs like `a]]b[[c`
+ * collapse to `["a", "b", "c"]` rather than being rejected. Justification:
+ *
+ *   1. Every key reaching this function has already passed `sanitizeKey`,
+ *      which rejects truly hostile inputs — dangerous keys (`__proto__`,
+ *      `prototype`, `constructor`), control characters, bidirectional
+ *      override characters, dot/bracket-only patterns, and overly long
+ *      strings. The remaining surface is benign syntactic noise.
+ *
+ *   2. Lenient parsing is acceptable defense-in-depth: even if an attacker
+ *      crafts unusual bracket placement, the parsed segments are still
+ *      passed through `sanitizeKey` again at every level by `setIn`, which
+ *      blocks dangerous keys at the segment level too.
+ *
+ *   3. Strict grammar enforcement here would be a behavioral change that
+ *      could break legitimate users with unusual key shapes, while
+ *      providing little additional security beyond what `sanitizeKey`
+ *      already enforces.
+ *
+ * The regexes are character-class only (no quantifiers), so this function is
+ * ReDoS-safe.
+ */
 function parsePathSegments(key: string): string[] {
   // Check cache first
   const cached = pathSegmentCache.get(key);
@@ -80,12 +154,23 @@ function parsePathSegments(key: string): string[] {
   const dotted = key.replace(/\]/g, "").replace(/\[/g, ".");
   const result = dotted.split(".").filter((s) => s.length > 0);
 
-  // Cache the result (limit cache size)
-  if (pathSegmentCache.size < 500) {
-    pathSegmentCache.set(key, result);
+  // Clear-on-full eviction: prevents permanent cache disablement after a flood
+  // of unique keys, while keeping the implementation O(1) on insert.
+  if (pathSegmentCache.size >= PATH_SEGMENT_CACHE_LIMIT) {
+    pathSegmentCache.clear();
   }
+  pathSegmentCache.set(key, result);
 
   return result;
+}
+
+/**
+ * @internal — test-only helper that resets the module-level path segment cache.
+ * Public callers must not depend on this; it exists solely so tests can verify
+ * cache eviction behavior without exposing the internal Map.
+ */
+export function __resetPathSegmentCache(): void {
+  pathSegmentCache.clear();
 }
 
 function expandObjectPaths(
@@ -98,46 +183,70 @@ function expandObjectPaths(
   if (currentDepth > maxDepth) {
     throw new Error(`Maximum object depth (${maxDepth}) exceeded`);
   }
+  // Path-stack cycle detection: only detect references currently on the recursion
+  // stack (true cycles), not previously-visited-but-fully-emitted nodes (shared
+  // acyclic subtrees, which must be fully cloned at each occurrence).
   const seenSet = seen ?? new WeakSet<object>();
   if (seenSet.has(obj)) return {};
   seenSet.add(obj);
+  try {
+    const result: Record<string, unknown> = {};
+    for (const rawKey of Object.keys(obj)) {
+      const safeKey = sanitizeKey(rawKey, maxKeyLength);
+      if (!safeKey) continue;
+      const value = obj[rawKey];
 
-  const result: Record<string, unknown> = {};
-  for (const rawKey of Object.keys(obj)) {
-    const safeKey = sanitizeKey(rawKey, maxKeyLength);
-    if (!safeKey) continue;
-    const value = obj[rawKey];
+      // Recursively expand nested objects first
+      const expandedValue = isPlainObject(value)
+        ? expandObjectPaths(
+            value as Record<string, unknown>,
+            maxKeyLength,
+            maxDepth,
+            currentDepth + 1,
+            seenSet,
+          )
+        : value;
 
-    // Recursively expand nested objects first
-    const expandedValue = isPlainObject(value)
-      ? expandObjectPaths(
-          value as Record<string, unknown>,
-          maxKeyLength,
-          maxDepth,
-          currentDepth + 1,
-          seenSet,
-        )
-      : value;
-
-    if (safeKey.includes(".") || safeKey.includes("[")) {
-      const segments = parsePathSegments(safeKey);
-      if (segments.length > 0) {
-        setIn(result, segments, expandedValue);
-        continue;
+      if (safeKey.includes(".") || safeKey.includes("[")) {
+        const segments = parsePathSegments(safeKey);
+        if (segments.length > 0) {
+          setIn(result, segments, expandedValue);
+          continue;
+        }
       }
+      result[safeKey] = expandedValue;
     }
-    result[safeKey] = expandedValue;
+    return result;
+  } finally {
+    seenSet.delete(obj);
   }
-  return result;
 }
 
-function setReqPropertySafe(target: Record<string, unknown>, key: string, value: unknown): void {
+/**
+ * Attempts to set a property on a request-like object.
+ *
+ * Returns `true` if the property is observable as the requested value after the call,
+ * `false` if every attempt failed.
+ *
+ * Strategy:
+ * 1. If no own descriptor exists, or the descriptor is configurable, redefine via
+ *    `Object.defineProperty` so the assigned value shadows any prototype-level getter
+ *    (e.g. Express 5's lazy `req.query` getter on `IncomingMessage.prototype`).
+ * 2. If the descriptor is non-configurable BUT writable, fall through to direct
+ *    assignment.
+ * 3. If the descriptor is non-configurable AND non-writable, attempt direct assignment
+ *    in a `try/catch` (in strict mode it will throw); on failure, surface a warning via
+ *    the supplied logger so the user knows the request continues to expose the original
+ *    (potentially polluted) value.
+ */
+function setReqPropertySafe(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  onFailure?: (message: string) => void,
+): boolean {
   try {
     const desc = Object.getOwnPropertyDescriptor(target, key);
-    if (desc && desc.configurable === false && desc.writable === false) {
-      // Non-configurable and not writable: skip
-      return;
-    }
     if (!desc || desc.configurable !== false) {
       Object.defineProperty(target, key, {
         value,
@@ -145,15 +254,50 @@ function setReqPropertySafe(target: Record<string, unknown>, key: string, value:
         configurable: true,
         enumerable: true,
       });
-      return;
+      return true;
     }
-  } catch (_) {
-    // fall back to assignment below
-  }
-  try {
-    target[key] = value;
-  } catch (_) {
-    // last resort: skip if cannot assign
+    // desc is non-configurable; defineProperty cannot be used.
+    if (desc.writable) {
+      target[key] = value;
+      return true;
+    }
+    // Non-configurable + non-writable: attempt direct assignment which will throw in
+    // strict mode. Do NOT silently skip — surface the failure.
+    try {
+      target[key] = value;
+      /* istanbul ignore next -- sloppy-mode read-back unreachable here:
+         this module is ESM (implicitly strict mode), so the assignment above
+         throws on any non-writable target. The read-back guards against the
+         sloppy-mode case where the assignment silently no-ops. */
+      if (target[key] === value) return true;
+    } catch (_assignErr) {
+      // fall through to the warning below
+    }
+    if (onFailure) {
+      onFailure(
+        `[hppx] Could not write sanitized value to req.${key}: property is non-configurable and non-writable. The original (potentially polluted) value remains on req.${key}.`,
+      );
+    }
+    return false;
+  } catch (_definePropErr) {
+    // defineProperty itself threw — try plain assignment as a last resort.
+    try {
+      target[key] = value;
+      if (target[key] === value) return true;
+    } catch (_assignErr) {
+      // fall through
+    }
+    /* istanbul ignore next -- defensive fallback for an extreme edge case:
+       reaching here requires defineProperty to throw AND the subsequent
+       direct assignment to either throw or silently no-op AND an onFailure
+       callback to be configured. Exercised indirectly via the assignment
+       fallback test (which patches defineProperty to throw). */
+    {
+      if (onFailure) {
+        onFailure(`[hppx] Could not write sanitized value to req.${key}: defineProperty failed.`);
+      }
+      return false;
+    }
   }
 }
 
@@ -165,6 +309,10 @@ function safeDeepClone<T>(
   currentDepth = 0,
   seen?: WeakSet<object>,
 ): T {
+  // Path-stack cycle detection: a node is added to `seen` on entry and removed
+  // on exit (via `finally`). This correctly distinguishes true cycles
+  // (currently on the recursion stack) from shared acyclic subtrees (already
+  // emitted but no longer on the stack — must be cloned independently).
   if (Array.isArray(input)) {
     if (currentDepth > maxDepth) {
       throw new Error(`Maximum object depth (${maxDepth}) exceeded`);
@@ -172,12 +320,16 @@ function safeDeepClone<T>(
     const seenSet = seen ?? new WeakSet<object>();
     if (seenSet.has(input)) return [] as T;
     seenSet.add(input);
-    // Limit array length to prevent memory exhaustion
-    const limit = maxArrayLength ?? 1000;
-    const limited = input.slice(0, limit);
-    return limited.map((v) =>
-      safeDeepClone(v, maxKeyLength, maxArrayLength, maxDepth, currentDepth + 1, seenSet),
-    ) as T;
+    try {
+      // Limit array length to prevent memory exhaustion
+      const limit = maxArrayLength ?? 1000;
+      const limited = input.slice(0, limit);
+      return limited.map((v) =>
+        safeDeepClone(v, maxKeyLength, maxArrayLength, maxDepth, currentDepth + 1, seenSet),
+      ) as T;
+    } finally {
+      seenSet.delete(input);
+    }
   }
   if (isPlainObject(input)) {
     if (currentDepth > maxDepth) {
@@ -186,19 +338,23 @@ function safeDeepClone<T>(
     const seenSet = seen ?? new WeakSet<object>();
     if (seenSet.has(input as object)) return {} as T;
     seenSet.add(input as object);
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(input)) {
-      if (!sanitizeKey(k, maxKeyLength)) continue;
-      out[k] = safeDeepClone(
-        (input as Record<string, unknown>)[k],
-        maxKeyLength,
-        maxArrayLength,
-        maxDepth,
-        currentDepth + 1,
-        seenSet,
-      );
+    try {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(input)) {
+        if (!sanitizeKey(k, maxKeyLength)) continue;
+        out[k] = safeDeepClone(
+          (input as Record<string, unknown>)[k],
+          maxKeyLength,
+          maxArrayLength,
+          maxDepth,
+          currentDepth + 1,
+          seenSet,
+        );
+      }
+      return out as T;
+    } finally {
+      seenSet.delete(input as object);
     }
-    return out as T;
   }
   return input;
 }
@@ -215,9 +371,15 @@ function mergeValues(values: unknown[], strategy: MergeStrategy): unknown {
         else acc.push(v);
         return acc;
       }, []);
-    /* istanbul ignore next -- unreachable: strategy is validated before reaching mergeValues */
-    default:
-      return values[values.length - 1];
+    /* istanbul ignore next -- exhaustiveness check unreachable from outside:
+       validateSanitizeOptions rejects every non-listed strategy at construction
+       time, so the only way to reach this branch is a programmer error (a new
+       MergeStrategy union member added without updating this switch). Failing
+       loudly here is preferable to a silent fallback. */
+    default: {
+      const _exhaustive: never = strategy;
+      throw new Error(`Unknown mergeStrategy: ${_exhaustive as string}`);
+    }
   }
 }
 
@@ -245,10 +407,15 @@ function normalizeWhitelist(whitelist?: string[] | string): string[] {
   return whitelist.filter((w) => typeof w === "string");
 }
 
+const WHITELIST_PATH_CACHE_LIMIT = 1000;
+
 function buildWhitelistHelpers(whitelist: string[]) {
   const exact = new Set(whitelist);
   const prefixes = whitelist.filter((w) => w.length > 0);
-  // Pre-build a cache for commonly checked paths for performance
+  // Pre-build a cache for commonly checked paths for performance. Uses a
+  // clear-on-full eviction policy (matching `pathSegmentCache`) to prevent a
+  // poisoning attack where an attacker pumps unique paths to permanently
+  // disable caching for legitimate paths.
   const pathCache = new Map<string, boolean>();
 
   return {
@@ -283,10 +450,12 @@ function buildWhitelistHelpers(whitelist: string[]) {
         }
       }
 
-      // Cache the result (limit cache size to prevent memory issues)
-      if (pathCache.size < 1000) {
-        pathCache.set(full, result);
+      // Clear-on-full eviction: prevents permanent cache disablement after a
+      // flood of unique paths, while keeping the implementation O(1) on insert.
+      if (pathCache.size >= WHITELIST_PATH_CACHE_LIMIT) {
+        pathCache.clear();
       }
+      pathCache.set(full, result);
 
       return result;
     },
@@ -363,31 +532,67 @@ function detectAndReduce(
 ): SanitizedResult<Record<string, unknown>> {
   let keyCount = 0;
   const polluted: Record<string, unknown> = {};
-  const pollutedKeys: string[] = [];
+  // Use a Set for de-duplication. Multiple arrays can land at the same dotted
+  // path (e.g. `[{tags:[...]}, {tags:[...]}]` produces two array sites at
+  // `items.tags`); the user-facing `pollutedKeys` list should report each
+  // affected leaf path exactly once, not once per occurrence. The `inArray`
+  // flag below also prevents nested array-in-array recursion from recording
+  // duplicate entries at the same path (e.g. `{a: [[1,2],[3,4]]}`).
+  const pollutedKeysSet = new Set<string>();
 
-  function processNode(node: unknown, path: string[] = [], depth = 0): unknown {
+  // === Detachment invariant ===
+  //
+  // The single upfront `safeDeepClone` enforces maxKeyLength / maxArrayLength /
+  // maxDepth and produces `cloned`, a tree fully detached from `input`:
+  //
+  //   1. No reference inside `cloned` aliases back into the caller-owned input
+  //      tree. This holds because safeDeepClone walks plain objects and arrays
+  //      recursively and only re-emits primitives / freshly-created containers.
+  //   2. Cycles in `input` are broken by safeDeepClone's path-stack `WeakSet`
+  //      (a node currently on the recursion stack is replaced with `{}` / `[]`
+  //      on its second visit), so `cloned` is acyclic.
+  //
+  // processNode walks `cloned` (NOT `input`) and:
+  //   - records `node` (a reference INTO `cloned`) into the polluted tree,
+  //     which is safe precisely because (1) guarantees no caller-owned data
+  //     is exposed via the polluted tree, and
+  //   - rebuilds the cleaned output as a fresh structure (objects via the
+  //     `out` literal in this function; arrays via `Array.prototype.map`).
+  //
+  // No nested safeDeepClone is performed here — it would be redundant work
+  // and, if invoked with a fresh WeakSet, could re-introduce traversal of
+  // cycles that the upfront clone already broke. (See Finding 24 in FIX.md.)
+  const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth);
+
+  function processNode(node: unknown, path: string[] = [], depth = 0, inArray = false): unknown {
     if (node === null) return opts.preserveNull ? null : undefined;
     if (node === undefined) return node;
 
     if (Array.isArray(node)) {
-      // Limit array length to prevent DoS
-      const limit = opts.maxArrayLength ?? 1000;
-      const limitedNode = node.slice(0, limit);
-
-      const mapped = limitedNode.map((v) => processNode(v, path, depth));
-      if (opts.mergeStrategy === "combine") {
-        // combine: do not record pollution, but flatten using mergeValues
-        return mergeValues(mapped, "combine");
+      // Array is already truncated to maxArrayLength by the upfront clone, so
+      // we can use it directly without re-slicing.
+      //
+      // Pollution is recorded only at the OUTERMOST array site for a given
+      // `path`. When `inArray` is true, we are recursing into elements of an
+      // already-recorded outer array (e.g. `{a: [[1,2],[3,4]]}` reaches the
+      // inner arrays at the same `path` as the outer one); in that case we
+      // skip the redundant `setIn` / `pollutedKeys.push` so consumers of
+      // `pollutedKeys` and `pollutedTree` see one entry per affected leaf.
+      const mapped = node.map((v) => processNode(v, path, depth, true));
+      if (!inArray) {
+        // Record pollution for ALL strategies (including combine). The combined
+        // output remains the cleaned value, but the security signal — polluted
+        // tree, pollutedKeys, onPollutionDetected callback — must still fire so
+        // consumers of those signals are not silently bypassed in combine mode.
+        //
+        // Per the detachment invariant above, `node` is part of `cloned` (NOT
+        // `input`); storing it in the polluted tree therefore cannot leak any
+        // caller-owned reference, and the polluted tree is itself acyclic
+        // because `cloned` is acyclic.
+        setIn(polluted, path, node);
+        pollutedKeysSet.add(path.join("."));
       }
-      // Other strategies: record pollution and reduce
-      setIn(
-        polluted,
-        path,
-        safeDeepClone(limitedNode, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth),
-      );
-      pollutedKeys.push(path.join("."));
-      const reduced = mergeValues(mapped, opts.mergeStrategy);
-      return reduced;
+      return mergeValues(mapped, opts.mergeStrategy);
     }
 
     if (isPlainObject(node)) {
@@ -406,7 +611,9 @@ function detectAndReduce(
         if (!safeKey) continue;
         const child = (node as Record<string, unknown>)[rawKey];
         const childPath = path.concat([safeKey]);
-        let value = processNode(child, childPath, depth + 1);
+        // Walking into an object key resets `inArray` — each key starts a fresh
+        // path under which a new array site can record pollution exactly once.
+        let value = processNode(child, childPath, depth + 1, false);
         if (typeof value === "string" && opts.trimValues) value = value.trim();
         out[safeKey] = value;
       }
@@ -416,9 +623,8 @@ function detectAndReduce(
     return node;
   }
 
-  const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth);
-  const cleaned = processNode(cloned, [], 0) as Record<string, unknown>;
-  return { cleaned, pollutedTree: polluted, pollutedKeys };
+  const cleaned = processNode(cloned, [], 0, false) as Record<string, unknown>;
+  return { cleaned, pollutedTree: polluted, pollutedKeys: Array.from(pollutedKeysSet) };
 }
 
 export function sanitize<T extends Record<string, unknown>>(
@@ -495,6 +701,24 @@ function validateSanitizeOptions(options: SanitizeOptions): void {
   ) {
     throw new TypeError("mergeStrategy must be 'keepFirst', 'keepLast', or 'combine'");
   }
+  if (options.trimValues !== undefined && typeof options.trimValues !== "boolean") {
+    throw new TypeError("trimValues must be a boolean");
+  }
+  if (options.preserveNull !== undefined && typeof options.preserveNull !== "boolean") {
+    throw new TypeError("preserveNull must be a boolean");
+  }
+  if (options.whitelist !== undefined) {
+    if (typeof options.whitelist !== "string" && !Array.isArray(options.whitelist)) {
+      throw new TypeError("whitelist must be a string or an array of strings");
+    }
+    if (Array.isArray(options.whitelist)) {
+      for (const entry of options.whitelist) {
+        if (typeof entry !== "string") {
+          throw new TypeError("whitelist must be a string or an array of strings");
+        }
+      }
+    }
+  }
 }
 
 function validateOptions(options: HppxOptions): void {
@@ -503,6 +727,9 @@ function validateOptions(options: HppxOptions): void {
     throw new TypeError("sources must be an array");
   }
   if (options.sources !== undefined) {
+    if (options.sources.length === 0) {
+      throw new TypeError("sources must contain at least one of 'query', 'body', 'params'");
+    }
     for (const source of options.sources) {
       if (!["query", "body", "params"].includes(source)) {
         throw new TypeError("sources must only contain 'query', 'body', or 'params'");
@@ -515,8 +742,15 @@ function validateOptions(options: HppxOptions): void {
   ) {
     throw new TypeError("checkBodyContentType must be 'urlencoded', 'any', or 'none'");
   }
-  if (options.excludePaths !== undefined && !Array.isArray(options.excludePaths)) {
-    throw new TypeError("excludePaths must be an array");
+  if (options.excludePaths !== undefined) {
+    if (!Array.isArray(options.excludePaths)) {
+      throw new TypeError("excludePaths must be an array");
+    }
+    for (const entry of options.excludePaths) {
+      if (typeof entry !== "string") {
+        throw new TypeError("excludePaths must contain only strings");
+      }
+    }
   }
   if (options.logger !== undefined && typeof options.logger !== "function") {
     throw new TypeError("logger must be a function");
@@ -526,6 +760,12 @@ function validateOptions(options: HppxOptions): void {
     typeof options.onPollutionDetected !== "function"
   ) {
     throw new TypeError("onPollutionDetected must be a function");
+  }
+  if (options.strict !== undefined && typeof options.strict !== "boolean") {
+    throw new TypeError("strict must be a boolean");
+  }
+  if (options.logPollution !== undefined && typeof options.logPollution !== "boolean") {
+    throw new TypeError("logPollution must be a boolean");
   }
 }
 
@@ -556,13 +796,58 @@ export default function hppx(options: HppxOptions = {}) {
 
   return function hppxMiddleware(req: any, res: any, next: ExpressLikeNext) {
     try {
-      if (shouldExcludePath(req?.path, excludePaths)) return next();
+      // Read req.path defensively. Some upstream middleware decorates `req`
+      // with a `path` getter that throws under specific conditions; if so,
+      // that error must NOT propagate as a 500 — exclusion lookup is best
+      // effort. On failure, treat the path as unknown (no exclusion match,
+      // proceed to process the request normally) and surface a warning via
+      // the configured logger so the upstream bug stays visible.
+      let pathForExclusion: string | undefined;
+      try {
+        pathForExclusion = req?.path;
+      } catch (pathErr) {
+        const message = `[hppx] Failed to read req.path during exclusion check; proceeding without path-based exclusion. Underlying error: ${
+          pathErr instanceof Error ? pathErr.message : String(pathErr)
+        }`;
+        if (logger) {
+          try {
+            logger(message);
+          } catch (_) {
+            console.warn(message);
+          }
+        } else {
+          console.warn(message);
+        }
+        pathForExclusion = undefined;
+      }
+      if (shouldExcludePath(pathForExclusion, excludePaths)) return next();
 
       let anyPollutionDetected = false;
       const allPollutedKeys: string[] = [];
 
+      // Per-request, per-source warning de-dup: don't spam the logger if writes fail
+      // for both the cleaned source and the polluted-tree property on the same request.
+      const warned = new Set<string>();
+      const warn = (message: string) => {
+        if (warned.has(message)) return;
+        warned.add(message);
+        if (logger) {
+          try {
+            logger(message);
+          } catch (_) {
+            // Logger failed; surface via console as a last-resort signal.
+            console.warn(message);
+          }
+        } else {
+          console.warn(message);
+        }
+      };
+
       for (const source of sources) {
-        /* istanbul ignore next */
+        /* istanbul ignore next -- defensive: Express always invokes middleware
+           with a non-null request object; this guard exists only so the loop
+           degrades gracefully if a non-Express harness invokes the middleware
+           with a missing/non-object req. */
         if (!req || typeof req !== "object") break;
         if (req[source] === undefined) continue;
 
@@ -579,7 +864,9 @@ export default function hppx(options: HppxOptions = {}) {
 
         const pollutedKey = `${source}Polluted`;
         const processedKey = `__hppxProcessed_${source}`;
-        const hasProcessedBefore = Boolean(req[processedKey]);
+        // Use hasOwnProperty.call to avoid prototype-chain traversal — protects against
+        // upstream prototype pollution gadgets that set `Object.prototype.__hppxProcessed_*`.
+        const hasProcessedBefore = Object.prototype.hasOwnProperty.call(req, processedKey);
 
         if (!hasProcessedBefore) {
           // First pass for this request part: reduce arrays and collect polluted
@@ -593,11 +880,33 @@ export default function hppx(options: HppxOptions = {}) {
             preserveNull,
           });
 
-          setReqPropertySafe(req, source, cleaned);
+          // Express 5 exposes `req.query` only as a getter on the prototype chain (no
+          // own descriptor by default), so the standard defineProperty path inside
+          // setReqPropertySafe shadows it cleanly. If a downstream framework version
+          // ever installs a non-configurable, non-writable descriptor, the helper
+          // surfaces a clear warning instead of failing silently.
+          setReqPropertySafe(req, source, cleaned, warn);
 
           // Attach polluted object (always present as {} when source processed)
-          setReqPropertySafe(req, pollutedKey, pollutedTree);
-          req[processedKey] = true;
+          setReqPropertySafe(req, pollutedKey, pollutedTree, warn);
+          // Mark as processed in a tamper-resistant, non-enumerable way so it is not
+          // visible to user code, response serializers, or attackers.
+          try {
+            Object.defineProperty(req, processedKey, {
+              value: true,
+              writable: false,
+              configurable: false,
+              enumerable: false,
+            });
+          } catch (_) {
+            // If req is frozen or defineProperty otherwise fails, fall back to assignment
+            // so behavior is at least correct for the current request.
+            try {
+              req[processedKey] = true;
+            } catch (_assignErr) {
+              // Last resort: skip; downstream middleware will simply re-process.
+            }
+          }
 
           // Apply whitelist now: move whitelisted arrays back
           const sourceData = req[source];
@@ -678,11 +987,13 @@ export default function hppx(options: HppxOptions = {}) {
         try {
           logger(error);
         } catch (logErr) {
-          // If custom logger fails, use console.error as fallback in development
-          if (process.env.NODE_ENV !== "production") {
-            console.error("[hppx] Logger failed:", logErr);
-            console.error("[hppx] Original error:", error);
-          }
+          // If custom logger fails, surface via console.error so the developer
+          // sees their logger bug regardless of NODE_ENV. Using `process.env`
+          // directly here would crash in edge runtimes (Cloudflare Workers,
+          // Vercel Edge, Deno without Node-compat) where `process` may be
+          // undefined or `process.env` may be a throwing Proxy.
+          console.error("[hppx] Logger failed:", logErr);
+          console.error("[hppx] Original error:", error);
         }
       }
 

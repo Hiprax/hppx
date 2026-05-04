@@ -221,11 +221,43 @@ describe("hppx - nested and strategies", () => {
   it("combine strategy", async () => {
     const app = buildApp({ mergeStrategy: "combine" });
     const res = await request(app).get("/search?x=1&x=2");
+    // combine still emits the security signal: req.queryPolluted and the
+    // pollutedKeys list reflect the duplicated parameter even though the
+    // cleaned data preserves the combined array.
     expect(res.body).toEqual({
       query: { x: ["1", "2"] },
-      queryPolluted: {},
+      queryPolluted: { x: ["1", "2"] },
       body: {},
       bodyPolluted: {},
     });
+  });
+
+  it("combine strategy fires onPollutionDetected and exposes queryPolluted", async () => {
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(express.json());
+    const events: { source: string; pollutedKeys: string[] }[] = [];
+    app.use(
+      hppx({
+        mergeStrategy: "combine",
+        logPollution: false,
+        onPollutionDetected: (_req, info) => {
+          events.push({ source: info.source, pollutedKeys: info.pollutedKeys });
+        },
+      }),
+    );
+    app.get("/c", (req, res) =>
+      res.json({
+        query: req.query || {},
+        queryPolluted: (req as any).queryPolluted || {},
+      }),
+    );
+    const res = await request(app).get("/c?x=1&x=2");
+    expect(res.status).toBe(200);
+    // Cleaned data: combined array preserved.
+    expect(res.body.query).toEqual({ x: ["1", "2"] });
+    // Side-channel signal: pollution detected and reported.
+    expect(res.body.queryPolluted).toEqual({ x: ["1", "2"] });
+    expect(events).toEqual([{ source: "query", pollutedKeys: ["query.x"] }]);
   });
 });

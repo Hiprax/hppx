@@ -115,6 +115,111 @@ describe("hppx - Security Features", () => {
     });
   });
 
+  describe("Control and bidirectional characters in keys", () => {
+    // ASCII C0 controls (U+0000..U+001F) and DEL (U+007F).
+    // Define samples using explicit Unicode escapes so the source file remains
+    // free of literal control characters (which would render the file confusing
+    // and could be mangled by editors / git tooling).
+    const c0Samples: { name: string; ch: string }[] = [
+      { name: "NUL (U+0000)", ch: "\u0000" },
+      { name: "SOH (U+0001)", ch: "\u0001" },
+      { name: "BEL (U+0007)", ch: "\u0007" },
+      { name: "TAB (U+0009)", ch: "\u0009" },
+      { name: "LF (U+000A)", ch: "\u000A" },
+      { name: "VT (U+000B)", ch: "\u000B" },
+      { name: "FF (U+000C)", ch: "\u000C" },
+      { name: "CR (U+000D)", ch: "\u000D" },
+      { name: "ESC (U+001B)", ch: "\u001B" },
+      { name: "US (U+001F)", ch: "\u001F" },
+      { name: "DEL (U+007F)", ch: "\u007F" },
+    ];
+
+    test.each(c0Samples)("rejects key containing $name", ({ ch }) => {
+      const polluted = `key${ch}injected`;
+      const input = { [polluted]: "value", safe: "ok" } as Record<string, unknown>;
+      const cleaned = sanitize(input);
+      expect(cleaned[polluted]).toBeUndefined();
+      expect(cleaned.safe).toBe("ok");
+    });
+
+    // C1 controls (U+0080..U+009F) — sample a few representative ones.
+    const c1Samples: { name: string; ch: string }[] = [
+      { name: "PAD (U+0080)", ch: "\u0080" },
+      { name: "NEL (U+0085)", ch: "\u0085" },
+      { name: "CSI (U+009B)", ch: "\u009B" },
+      { name: "APC (U+009F)", ch: "\u009F" },
+    ];
+
+    test.each(c1Samples)("rejects key containing $name", ({ ch }) => {
+      const polluted = `key${ch}injected`;
+      const input = { [polluted]: "value", safe: "ok" } as Record<string, unknown>;
+      const cleaned = sanitize(input);
+      expect(cleaned[polluted]).toBeUndefined();
+      expect(cleaned.safe).toBe("ok");
+    });
+
+    // Unicode bidirectional control / formatting characters.
+    const bidiSamples: { name: string; ch: string }[] = [
+      { name: "LRM (U+200E)", ch: "\u200E" },
+      { name: "RLM (U+200F)", ch: "\u200F" },
+      { name: "LRE (U+202A)", ch: "\u202A" },
+      { name: "RLE (U+202B)", ch: "\u202B" },
+      { name: "PDF (U+202C)", ch: "\u202C" },
+      { name: "LRO (U+202D)", ch: "\u202D" },
+      { name: "RLO (U+202E)", ch: "\u202E" },
+      { name: "LRI (U+2066)", ch: "\u2066" },
+      { name: "RLI (U+2067)", ch: "\u2067" },
+      { name: "FSI (U+2068)", ch: "\u2068" },
+      { name: "PDI (U+2069)", ch: "\u2069" },
+      { name: "BOM/ZWNBSP (U+FEFF)", ch: "\uFEFF" },
+    ];
+
+    test.each(bidiSamples)("rejects key containing $name", ({ ch }) => {
+      const polluted = `admin${ch}user`;
+      const input = { [polluted]: "value", safe: "ok" } as Record<string, unknown>;
+      const cleaned = sanitize(input);
+      expect(cleaned[polluted]).toBeUndefined();
+      expect(cleaned.safe).toBe("ok");
+    });
+
+    test("rejects keys containing RLO override (visual spoofing attempt)", () => {
+      // U+202E reverses subsequent characters' display direction; attackers can
+      // use this to confuse key-based authorization checks (e.g. visually
+      // displaying "admin" while the underlying key differs from "admin").
+      const spoofed = "\u202Enimda";
+      const input = { [spoofed]: "value", safe: "ok" } as Record<string, unknown>;
+      const cleaned = sanitize(input);
+      expect(cleaned[spoofed]).toBeUndefined();
+      expect(cleaned.safe).toBe("ok");
+    });
+
+    test("rejects key containing control character via the middleware", async () => {
+      const app = express();
+      app.use(hppx({ logPollution: false }));
+      app.get("/test", (req, res) => res.json({ query: req.query }));
+
+      const polluted = "bad\u0001key";
+      const res = await request(app)
+        .get("/test")
+        .query({ [polluted]: "value", safe: "ok" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.query[polluted]).toBeUndefined();
+      expect(res.body.query.safe).toBe("ok");
+    });
+
+    test("accepts ordinary printable Unicode characters in keys", () => {
+      // Sanity check: the new character class must not over-block. Latin
+      // extended (café), Greek (α), Arabic, CJK, and emoji must still be valid
+      // key characters.
+      const safeKeys = ["café", "α", "مرحبا", "日本語", "key🚀"];
+      for (const k of safeKeys) {
+        const cleaned = sanitize({ [k]: "v" } as Record<string, unknown>);
+        expect(cleaned[k]).toBe("v");
+      }
+    });
+  });
+
   describe("Options validation", () => {
     test("throws on invalid maxDepth", () => {
       expect(() => hppx({ maxDepth: -1 })).toThrow(TypeError);
@@ -169,6 +274,62 @@ describe("hppx - Security Features", () => {
       expect(() => hppx({ onPollutionDetected: [] as any })).toThrow(TypeError);
     });
 
+    test("throws on invalid strict", () => {
+      expect(() => hppx({ strict: "true" as any })).toThrow(TypeError);
+      expect(() => hppx({ strict: 1 as any })).toThrow(TypeError);
+      expect(() => hppx({ strict: 0 as any })).toThrow(TypeError);
+      expect(() => hppx({ strict: null as any })).toThrow(TypeError);
+      expect(() => hppx({ strict: {} as any })).toThrow(TypeError);
+    });
+
+    test("throws on invalid logPollution", () => {
+      expect(() => hppx({ logPollution: "yes" as any })).toThrow(TypeError);
+      expect(() => hppx({ logPollution: 1 as any })).toThrow(TypeError);
+      expect(() => hppx({ logPollution: null as any })).toThrow(TypeError);
+      expect(() => hppx({ logPollution: {} as any })).toThrow(TypeError);
+    });
+
+    test("throws on invalid trimValues", () => {
+      expect(() => hppx({ trimValues: "true" as any })).toThrow(TypeError);
+      expect(() => hppx({ trimValues: 1 as any })).toThrow(TypeError);
+      expect(() => hppx({ trimValues: null as any })).toThrow(TypeError);
+      expect(() => sanitize({}, { trimValues: "true" as any })).toThrow(TypeError);
+    });
+
+    test("throws on invalid preserveNull", () => {
+      expect(() => hppx({ preserveNull: "false" as any })).toThrow(TypeError);
+      expect(() => hppx({ preserveNull: 0 as any })).toThrow(TypeError);
+      expect(() => hppx({ preserveNull: null as any })).toThrow(TypeError);
+      expect(() => sanitize({}, { preserveNull: 0 as any })).toThrow(TypeError);
+    });
+
+    test("throws on invalid whitelist type", () => {
+      expect(() => hppx({ whitelist: 42 as any })).toThrow(TypeError);
+      expect(() => hppx({ whitelist: {} as any })).toThrow(TypeError);
+      expect(() => hppx({ whitelist: true as any })).toThrow(TypeError);
+      expect(() => sanitize({}, { whitelist: 42 as any })).toThrow(TypeError);
+      expect(() => sanitize({}, { whitelist: {} as any })).toThrow(TypeError);
+    });
+
+    test("throws on whitelist array containing non-string elements", () => {
+      expect(() => hppx({ whitelist: ["ok", 42 as any] })).toThrow(TypeError);
+      expect(() => hppx({ whitelist: ["ok", { name: "x" } as any] })).toThrow(TypeError);
+      expect(() => hppx({ whitelist: [null as any] })).toThrow(TypeError);
+      expect(() => sanitize({}, { whitelist: ["ok", 42 as any] })).toThrow(TypeError);
+    });
+
+    test("throws on excludePaths array containing non-string elements", () => {
+      expect(() => hppx({ excludePaths: [42 as any] })).toThrow(TypeError);
+      expect(() => hppx({ excludePaths: ["/ok", 1 as any] })).toThrow(TypeError);
+      expect(() => hppx({ excludePaths: [null as any] })).toThrow(TypeError);
+      expect(() => hppx({ excludePaths: [{} as any] })).toThrow(TypeError);
+    });
+
+    test("throws on empty sources array", () => {
+      expect(() => hppx({ sources: [] })).toThrow(TypeError);
+      expect(() => hppx({ sources: [] })).toThrow(/at least one/);
+    });
+
     test("accepts valid options", () => {
       expect(() => hppx({ maxDepth: 10 })).not.toThrow();
       expect(() => hppx({ maxKeys: 100 })).not.toThrow();
@@ -178,10 +339,16 @@ describe("hppx - Security Features", () => {
       expect(() => hppx({ sources: ["query", "body"] })).not.toThrow();
       expect(() => hppx({ checkBodyContentType: "any" })).not.toThrow();
       expect(() => hppx({ excludePaths: ["/public"] })).not.toThrow();
-      // eslint-disable-next-line @typescript-eslint/no-empty-function
       expect(() => hppx({ logger: () => {} })).not.toThrow();
-      // eslint-disable-next-line @typescript-eslint/no-empty-function
       expect(() => hppx({ onPollutionDetected: () => {} })).not.toThrow();
+      expect(() => hppx({ strict: true })).not.toThrow();
+      expect(() => hppx({ strict: false })).not.toThrow();
+      expect(() => hppx({ logPollution: true })).not.toThrow();
+      expect(() => hppx({ logPollution: false })).not.toThrow();
+      expect(() => hppx({ trimValues: true })).not.toThrow();
+      expect(() => hppx({ preserveNull: false })).not.toThrow();
+      expect(() => hppx({ whitelist: "user.tags" })).not.toThrow();
+      expect(() => hppx({ whitelist: ["a", "b.c"] })).not.toThrow();
     });
   });
 
@@ -211,7 +378,7 @@ describe("hppx - Security Features", () => {
 
       // Error handler must come after the route
       app.get("/test", (req, res) => res.json({ ok: true }));
-      app.use((err: any, req: any, res: any, next: any) => {
+      app.use((err: any, _req: any, res: any, _next: any) => {
         res.status(500).json({ error: err.message });
       });
 
@@ -367,15 +534,16 @@ describe("hppx - Security Features", () => {
   });
 
   describe("Pollution logging", () => {
-    const originalWarn = console.warn;
-
-    afterEach(() => {
-      console.warn = originalWarn;
-    });
+    // Tests in this block intentionally trigger logger / fallback console.warn
+    // output. We use jest.spyOn(...).mockImplementation so restoreMocks: true
+    // (configured in jest.config.ts) tears the spy down deterministically
+    // between tests, preventing leaked "[hppx] ..." messages on stderr.
 
     test("logs pollution to console.warn by default", async () => {
       const warnings: any[] = [];
-      console.warn = jest.fn((...args) => warnings.push(args));
+      jest.spyOn(console, "warn").mockImplementation((...args: any[]) => {
+        warnings.push(args);
+      });
 
       const app = express();
       app.use(hppx());
@@ -407,7 +575,9 @@ describe("hppx - Security Features", () => {
 
     test("falls back to console.warn when custom logger fails", async () => {
       const warnings: any[] = [];
-      console.warn = jest.fn((...args) => warnings.push(args));
+      jest.spyOn(console, "warn").mockImplementation((...args: any[]) => {
+        warnings.push(args);
+      });
 
       const failingLogger = jest.fn(() => {
         throw new Error("Logger failed");
@@ -426,7 +596,9 @@ describe("hppx - Security Features", () => {
 
     test("respects logPollution: false", async () => {
       const warnings: any[] = [];
-      console.warn = jest.fn((...args) => warnings.push(args));
+      jest.spyOn(console, "warn").mockImplementation((...args: any[]) => {
+        warnings.push(args);
+      });
 
       const app = express();
       app.use(hppx({ logPollution: false }));
@@ -456,6 +628,120 @@ describe("hppx - Security Features", () => {
       expect(logs[0]).toContain("query.a");
       expect(logs[0]).toContain("query.b");
       expect(logs[0]).toContain("query.c");
+    });
+  });
+
+  describe("Prototype-poisoned __hppxProcessed_* flag bypass", () => {
+    test("ignores Object.prototype.__hppxProcessed_query and still sanitizes", async () => {
+      // Pre-poison the prototype chain — simulates an upstream prototype-pollution
+      // gadget elsewhere in the process. Wrap in try/finally so we ALWAYS clean up,
+      // even if the assertions throw.
+      (Object.prototype as Record<string, unknown>).__hppxProcessed_query = true;
+      try {
+        let observedQuery: any = null;
+        let observedQueryPolluted: any = null;
+
+        const app = express();
+        app.use(hppx({ logPollution: false }));
+        app.get("/test", (req, res) => {
+          observedQuery = req.query;
+          observedQueryPolluted = (req as any).queryPolluted;
+          res.json({});
+        });
+
+        const res = await request(app).get("/test?x=1&x=2");
+
+        expect(res.status).toBe(200);
+        // The middleware MUST have run — it must NOT have been short-circuited
+        // by the prototype-poisoned flag. So req.query.x should be reduced (keepLast).
+        expect(observedQuery).toBeTruthy();
+        expect(observedQuery.x).toBe("2");
+        // And the pollution should have been recorded.
+        expect(observedQueryPolluted).toBeTruthy();
+        expect(observedQueryPolluted.x).toEqual(["1", "2"]);
+      } finally {
+        delete (Object.prototype as Record<string, unknown>).__hppxProcessed_query;
+      }
+    });
+
+    test("processed flag is non-enumerable on req", async () => {
+      let processedKeyEnumerable: boolean | null = null;
+
+      const app = express();
+      app.use(hppx({ logPollution: false }));
+      app.get("/test", (req, res) => {
+        const desc = Object.getOwnPropertyDescriptor(req, "__hppxProcessed_query");
+        processedKeyEnumerable = desc ? Boolean(desc.enumerable) : null;
+        res.json({});
+      });
+
+      await request(app).get("/test?x=1&x=2");
+
+      // Flag was set (descriptor exists) and is NOT enumerable.
+      expect(processedKeyEnumerable).toBe(false);
+    });
+  });
+
+  describe("Shared subtree handling (path-stack cycle detection)", () => {
+    test("preserves shared object subtree (acyclic) on every occurrence", () => {
+      // A shared but acyclic object reference must appear cloned at every site.
+      // The previous WeakSet-for-the-whole-walk implementation incorrectly emitted
+      // {} on the second visit.
+      const shared = { x: 1 };
+      const result = sanitize({ a: shared, b: shared } as any);
+
+      expect(result.a).toEqual({ x: 1 });
+      expect(result.b).toEqual({ x: 1 });
+      // Each occurrence must be its own copy, not share reference identity with the input
+      expect(result.a).not.toBe(shared);
+      expect(result.b).not.toBe(shared);
+    });
+
+    test("preserves shared array subtree (acyclic) on every occurrence", () => {
+      // A shared array reference must be retained at every key. Whitelist both
+      // entries so the array is preserved (not reduced as pollution). The previous
+      // shared-WeakSet implementation produced [] for the second occurrence
+      // regardless of whitelist, because the shared array was already in `seen`
+      // when the polluted-tree clone ran.
+      const arr = [1, 2];
+      const result = sanitize({ a: { v: arr }, b: { v: arr } } as any, {
+        whitelist: ["a.v", "b.v"],
+      });
+      expect(result.a.v).toEqual([1, 2]);
+      expect(result.b.v).toEqual([1, 2]);
+    });
+
+    test("breaks genuine self-cycle without infinite loop", () => {
+      const o: any = { x: 1 };
+      o.self = o;
+      const result = sanitize(o);
+      expect(result.x).toBe(1);
+      // Cycle is cut off — the back-edge becomes an empty object
+      expect(result.self).toEqual({});
+    });
+
+    test("breaks cycle through array without infinite loop", () => {
+      const a: any = [];
+      a.push(a);
+      // Wrap so it goes through the middleware/sanitize as an object value
+      const result: any = sanitize({ items: { wrapped: a } } as any);
+      // Should terminate cleanly. After the cycle is broken, the resulting
+      // structure must remain a finite JSON-serializable shape.
+      expect(() => JSON.stringify(result)).not.toThrow();
+    });
+
+    test("preserves diamond-shaped acyclic graph", () => {
+      // leaf is referenced from two slots in parent, and parent is referenced
+      // from two slots in the root. The previous implementation lost three of
+      // the four leaves; the path-stack implementation must keep all four.
+      const leaf = { z: 1 };
+      const parent = { l: leaf, r: leaf };
+      const result: any = sanitize({ a: parent, b: parent } as any);
+
+      expect(result.a.l.z).toBe(1);
+      expect(result.a.r.z).toBe(1);
+      expect(result.b.l.z).toBe(1);
+      expect(result.b.r.z).toBe(1);
     });
   });
 });

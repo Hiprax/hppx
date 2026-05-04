@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://img.shields.io/npm/v/hppx)](https://www.npmjs.com/package/hppx)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A516-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-green.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-brightgreen.svg)](#)
 
 ---
@@ -63,6 +63,8 @@ app.get("/search", (req, res) => {
     queryPolluted: req.queryPolluted ?? {},
     body: req.body ?? {},
     bodyPolluted: req.bodyPolluted ?? {},
+    params: req.params,
+    paramsPolluted: req.paramsPolluted ?? {},
   });
 });
 ```
@@ -91,9 +93,26 @@ app.get("/search", (req, res) => {
     queryPolluted: req.queryPolluted ?? {},
     body: req.body ?? {},
     bodyPolluted: req.bodyPolluted ?? {},
+    params: req.params,
+    paramsPolluted: req.paramsPolluted ?? {},
   });
 });
 ```
+
+### Polluted Parameter Tree
+
+For each enabled source, hppx attaches a parallel `*Polluted` object to the
+request that records the original (pre-reduction) array values for any keys
+that were detected as polluted:
+
+| Source   | Cleaned data on `req` | Polluted tree on `req` |
+| -------- | --------------------- | ---------------------- |
+| `query`  | `req.query`           | `req.queryPolluted`    |
+| `body`   | `req.body`            | `req.bodyPolluted`     |
+| `params` | `req.params`          | `req.paramsPolluted`   |
+
+These properties are typed via a TypeScript module augmentation included in
+the published types — no extra import is needed.
 
 ---
 
@@ -150,7 +169,22 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 function sanitize<T extends Record<string, unknown>>(input: T, options?: SanitizeOptions): T;
 ```
 
-Sanitize a plain object using the same rules as the middleware. Returns only the cleaned object (polluted data is not returned — use the middleware if you need `req.queryPolluted` etc.).
+Sanitize a plain object using the same rules as the middleware.
+
+**Return shape:** `sanitize()` returns **only** the cleaned object — the
+same shape as `input`, with arrays reduced according to the chosen merge
+strategy. It does **not** return the internal `SanitizedResult`
+(`{ cleaned, pollutedTree, pollutedKeys }`); polluted-tree data is
+deliberately discarded. If you need access to the polluted tree or polluted
+keys, use the middleware factory `hppx()` and read `req.queryPolluted` /
+`req.bodyPolluted` / `req.paramsPolluted` instead.
+
+**Options:** `sanitize()` accepts only `SanitizeOptions` —
+`whitelist`, `mergeStrategy`, `maxDepth`, `maxKeys`, `maxArrayLength`,
+`maxKeyLength`, `trimValues`, and `preserveNull`. Middleware-only options
+(`sources`, `excludePaths`, `strict`, `onPollutionDetected`, `logger`,
+`logPollution`, `checkBodyContentType`) are silently ignored when passed
+to `sanitize()` — use `hppx()` if you need any of those features.
 
 **ESM:**
 
@@ -271,6 +305,52 @@ router.get("/data", (req, res) => {
 app.use("/api", router);
 ```
 
+#### Option Precedence Across Stacked Middleware
+
+When the same source (`query` / `body` / `params`) has already been processed by an
+earlier `hppx()` instance on the same request, a subsequent `hppx()` only applies its
+own **`whitelist`** — used to restore additional whitelisted entries from the
+polluted tree the first middleware already collected. Every other option on the
+later instance is **silently ignored for that source** because the source is no
+longer available in its original (un-reduced) form.
+
+The options ignored on subsequent middleware (per-source) are:
+
+- `mergeStrategy`
+- `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
+- `trimValues`, `preserveNull`
+- `strict` (will **not** trigger HTTP 400 if the earlier middleware already cleaned the source)
+- `onPollutionDetected`, `logger`, `logPollution`
+- `excludePaths` is checked per-instance (independent of the processed flag), but
+  if the source was already processed, only whitelist restoration runs.
+
+**Footgun example:**
+
+```typescript
+// Global middleware — keepLast strategy, no strict mode
+app.use(hppx({ mergeStrategy: "keepLast" }));
+
+// Route-level middleware — strict mode, but it's TOO LATE
+app.use(
+  "/api/admin",
+  hppx({ strict: true }), // SILENTLY IGNORED — the source was already
+  // cleaned by the global middleware, so strict
+  // mode here will NOT cause a 400 response.
+);
+```
+
+If you need strict mode on a specific route, configure `strict: true` on the
+**first** `hppx()` instance that processes the relevant source — typically the
+global middleware. Equivalent options (`maxDepth`, `mergeStrategy`, callbacks,
+loggers) must likewise be set on the first instance. Subsequent instances are
+useful only for **expanding** the whitelist to recover additional fields from
+`req.queryPolluted`/`req.bodyPolluted`/`req.paramsPolluted` on a per-route basis.
+
+A subsequent middleware can only ever _expand_ the whitelist (by restoring more
+fields back from the polluted tree). It cannot restrict an already-whitelisted
+field, because the previous middleware has already moved that field back into
+the source.
+
 ### Pollution Detection Callback
 
 ```typescript
@@ -293,16 +373,17 @@ app.use(
 
 ### What hppx Protects Against
 
-| Threat                   | Protection                                                                         |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| **Parameter pollution**  | Duplicate parameters are reduced to a single value via the chosen merge strategy   |
-| **Prototype pollution**  | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level |
-| **DoS via deep nesting** | `maxDepth` limit throws error on excessive nesting                                 |
-| **DoS via key flooding** | `maxKeys` limit throws error when key count is exceeded                            |
-| **DoS via large arrays** | `maxArrayLength` truncates arrays before processing                                |
-| **DoS via long keys**    | `maxKeyLength` silently drops excessively long keys                                |
-| **Null-byte injection**  | Keys containing `\u0000` are silently dropped                                      |
-| **Malformed keys**       | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped          |
+| Threat                       | Protection                                                                                                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Parameter pollution**      | Duplicate parameters are reduced to a single value via the chosen merge strategy                                                                                                           |
+| **Prototype pollution**      | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level                                                                                                         |
+| **DoS via deep nesting**     | `maxDepth` limit throws error on excessive nesting                                                                                                                                         |
+| **DoS via key flooding**     | `maxKeys` limit throws error when key count is exceeded                                                                                                                                    |
+| **DoS via large arrays**     | `maxArrayLength` truncates arrays before processing                                                                                                                                        |
+| **DoS via long keys**        | `maxKeyLength` silently drops excessively long keys                                                                                                                                        |
+| **Null-byte injection**      | Keys containing `\u0000` are silently dropped                                                                                                                                              |
+| **Control / bidi key chars** | Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`) or Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, BOM) are dropped |
+| **Malformed keys**           | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped                                                                                                                  |
 
 ### Production Configuration
 
@@ -326,6 +407,20 @@ app.use(
 );
 ```
 
+### Express 5 Note
+
+In Express 5, `req.query` is exposed as a lazy getter on the prototype chain rather than
+an own property. hppx handles this transparently: it uses `Object.defineProperty` to
+install the sanitized value as a writable own property that shadows the proto-level
+getter. After the middleware runs, `req.query` reflects the cleaned value (e.g.
+`req.query.x === "2"` after `?x=1&x=2` with `mergeStrategy: "keepLast"`).
+
+If a downstream layer makes `req.query` non-configurable AND non-writable before hppx
+runs (uncommon), hppx will not silently leave the polluted value in place — it will
+emit a warning via the configured `logger` (or `console.warn` if none is provided) so
+the misconfiguration is visible. The warning is de-duplicated per request and per
+source.
+
 ### What hppx Does NOT Protect Against
 
 hppx is not a complete security solution. You still need:
@@ -336,6 +431,52 @@ hppx is not a complete security solution. You still need:
 - **Authentication/Authorization** — validate user permissions
 - **Rate limiting** — prevent brute-force attacks
 - **Input validation** — use schema validation libraries (Joi, Yup, Zod) alongside hppx
+
+---
+
+## FAQ / Known Behaviors
+
+A short reference for behaviors that surprise people most often.
+
+**1. The `combine` strategy still records pollution.**
+Earlier versions silently dropped pollution events when `mergeStrategy: "combine"`
+was in effect, because the array was preserved as-is. This was a footgun for
+security logging. Today, `combine` records polluted keys into `req.queryPolluted`
+(etc.) and fires `onPollutionDetected` and `logPollution` exactly like the other
+strategies — the cleaned data simply contains the flattened array rather than a
+reduced single value.
+
+**2. Multi-middleware: subsequent passes only honor `whitelist`.**
+When two `hppx()` instances run on the same request (e.g. global + router), the
+second one only applies its own `whitelist` — to restore additional fields out
+of the polluted tree the first instance already collected. All other options
+(`mergeStrategy`, `strict`, `onPollutionDetected`, limits, etc.) on the second
+instance are silently ignored for any source the first instance already
+processed. See **Multi-Middleware Stacking → Option Precedence** above for the
+full list. Configure `strict: true`, callbacks, and limits on the **first**
+`hppx()` that processes the source — typically the global middleware.
+
+**3. Express 5 frozen `req.query` fallback.**
+Express 5 exposes `req.query` as a lazy getter on the prototype chain. hppx
+shadows it with a writable own property carrying the cleaned value. If an
+unusual downstream layer makes `req.query` non-configurable AND non-writable
+before hppx runs, hppx will emit a warning via the configured `logger` (or
+`console.warn`) instead of silently leaving the polluted array in place.
+
+**4. Control / bidirectional override characters in keys are rejected.**
+Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`),
+Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO,
+LRI/RLI/FSI/PDI), or BOM (`﻿`) are silently dropped. This prevents
+log-injection / DB-corruption tricks that use invisible control characters
+to disguise key names.
+
+**5. `sanitize()` returns only the cleaned object.**
+The standalone `sanitize()` function returns the same shape as its input, with
+arrays reduced. It does **not** return `{cleaned, pollutedTree, pollutedKeys}`
+— if you need the polluted tree, use the middleware factory `hppx()` and read
+`req.queryPolluted` / `req.bodyPolluted` / `req.paramsPolluted`. Middleware-only
+options (`sources`, `excludePaths`, `strict`, callbacks, etc.) are silently
+ignored when passed to `sanitize()`.
 
 ---
 
