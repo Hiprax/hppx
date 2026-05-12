@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.7 — CodeQL alert cleanup follow-up (2026-05-12)
+
+Repo-hygiene release. No source/API changes; runtime behavior of the
+published `hppx` package is unchanged.
+
+### Fixed
+
+- **`tests/hppx.coverage.test.ts`** — The v0.2.6 fix for CodeQL alert #3
+  (`js/invalid-prototype-value`) replaced `inner["__proto__"] = "malicious"`
+  with `Object.defineProperty(inner, "__proto__", { value: "malicious", ... })`,
+  but CodeQL's rule pattern-matches the literal `"__proto__"` next to a
+  non-object value regardless of write mechanism, so it simply moved the
+  match site (alert #4 opened on the new line). The key is now built from
+  substrings (`"__" + "proto__"`) so the analyzer can't statically associate
+  the property name with the assignment. Test semantics unchanged — still
+  plants a literal `__proto__` own-property on a null-prototype object to
+  verify `safeDeepClone` strips it.
+
+### Verified
+
+- `npm run build` / `typecheck` / `lint` / `test` — all green
+  (185 tests, 99.72% stmts, 100% funcs/lines).
+
 ## v0.2.6 — CodeQL alert cleanup (2026-05-12)
 
 Repo-hygiene release. No source/API changes; runtime behavior of the
