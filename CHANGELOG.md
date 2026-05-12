@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.2.4 — Repo hardening + badges + provenance trust signal (2026-05-12)
+
+Documentation and repo-hardening release. No source/API changes; the
+package surface and runtime behavior are unchanged. The published
+tarball changes only because the README ships with the new badge set.
+
+### Added
+
+- **README badges aligned to the required project set:**
+  CI, CodeQL, codecov, Dependencies, npm provenance — plus npm version,
+  license, Node.js. Replaces the prior "Zero Dependencies" wording with
+  a plain `dependencies-0` badge. Adds an `npm provenance` static badge
+  linking to the package page where npm renders the Sigstore-attested
+  provenance for each released version.
+
+### Hardened (GitHub-side, no repo file changes)
+
+The following best-practice settings were enabled directly on the
+GitHub repository (`Hiprax/hppx`) via the GitHub API. These are
+repository configuration, not source code, so they do not appear in
+the diff — but they protect every future commit and release.
+
+- **Dependabot alerts** enabled — surfaces transitive vulnerabilities
+  in dev dependencies (zero runtime deps means runtime is always 0
+  vulnerabilities by construction).
+- **Dependabot security updates** enabled — auto-opens PRs for
+  vulnerability fixes when an advisory affects the lockfile.
+- **Private vulnerability reporting** enabled — researchers can report
+  security issues via GitHub's confidential channel instead of public
+  issues.
+- **Secret scanning** + **push protection** enabled (was already on).
+- **Tag protection ruleset** (`release tags`, id 16297738) targeting
+  `refs/tags/v[0-9]*` with `deletion`, `non_fast_forward`, and
+  `update` rules — published version tags can no longer be moved or
+  removed once created, even by the owner. Combined with the
+  immutability of npm version IDs, every `vX.Y.Z` published from this
+  repo is now a permanent reference point.
+- **Branch protection ruleset on `main`** (id 16288916, unchanged
+  from v0.2.3): blocks deletion, non-fast-forward, requires 5 status
+  checks (Test on Node 18/20/22/24, Analyze javascript-typescript),
+  required linear history, no bypass.
+- **Merge settings tightened:** merge commits disabled, squash merge
+  enabled (PR title + body), rebase merge allowed, auto-merge enabled,
+  head branches auto-deleted on PR merge. Squash merge keeps `main`'s
+  history linear and clean.
+
+### Verified
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean.
+- `npm run format:check` — clean.
+- `npm test` — 185/185 passing.
+- `npm run build` — both ESM/CJS bundles emit.
+- `npm run check-dts` — `dist/index.d.ts` and `dist/index.d.cts` expose
+  the same 11 symbols.
+- `npm run check-types-pack` — attw No problems found.
+- `npm audit` — 0 vulnerabilities.
+- `npm pack --dry-run` — tarball shape unchanged.
+
 ## v0.2.3 — Dependency upgrades + CI/release automation (2026-05-12)
 
 Dev-dependency refresh plus a one-time GitHub/CI hardening pass. No
