@@ -146,6 +146,13 @@ export function today() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// Escape every RegExp metacharacter so an arbitrary string can be safely
+// interpolated into a `new RegExp(...)` source. Partial escapes (e.g. only `.`)
+// trip CodeQL's incomplete-sanitization rule even when input is constrained.
+export function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function usage(text) {
   console.log(text.trim());
   process.exit(0);

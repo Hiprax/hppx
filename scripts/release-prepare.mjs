@@ -38,6 +38,7 @@ import {
   writeChangelog,
   bumpVersion,
   today,
+  escapeRegex,
 } from "./_lib.mjs";
 
 const HELP = `
@@ -122,7 +123,7 @@ main(async () => {
 
   const changelog = await readChangelog();
   if (changelog) {
-    const headingRe = new RegExp(`^## v${newVersion.replace(/\./g, "\\.")}( |$)`, "m");
+    const headingRe = new RegExp(`^## v${escapeRegex(newVersion)}( |$)`, "m");
     if (headingRe.test(changelog)) {
       log.ok(`CHANGELOG already has a v${newVersion} heading; leaving untouched.`);
     } else {
