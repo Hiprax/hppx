@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.2.5 — Contributor identity canonicalization (2026-05-12)
+
+Repo-hygiene release. No source/API changes; the published tarball is
+unaffected — `.mailmap` is not in `package.json` `files`, so it ships
+in the source repo only.
+
+### Added
+
+- **`.mailmap`** at the repo root. Canonicalizes author identities for
+  `git shortlog`, `git log --use-mailmap`, GitHub's contributors graph,
+  and any other tooling that honors the file. Maps the per-user
+  `108609319+Sajadlance@users.noreply.github.com` noreply email (used by
+  GitHub on squash-merged PR commits) back to
+  `Sajadlance <sajadlance@gmail.com>`, so the same person isn't double-
+  counted as two separate contributors. Hiprax canonicalized as
+  `Hiprax <admin@hiprax.com>`.
+
+### Verified
+
+- `git shortlog -sne --all` now reports exactly two identities
+  (Sajadlance, Hiprax) — matches `gh api repos/Hiprax/hppx/contributors`.
+- `npm run typecheck` / `lint` / `format:check` / `test` / `build` /
+  `check-dts` — all green.
+- `npm pack --dry-run` — tarball shape unchanged (`.mailmap` excluded
+  from the publish set, as intended).
+
 ## v0.2.4 — Repo hardening + badges + provenance trust signal (2026-05-12)
 
 Documentation and repo-hardening release. No source/API changes; the
