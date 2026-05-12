@@ -13,7 +13,18 @@
 //
 // CHANGELOG convention used in this repo: `## vX.Y.Z - Title (YYYY-MM-DD)`
 
-import { run, git, log, c, confirm, usage, main, readPkg, readChangelog } from "./_lib.mjs";
+import {
+  run,
+  git,
+  log,
+  c,
+  confirm,
+  usage,
+  main,
+  readPkg,
+  readChangelog,
+  escapeRegex,
+} from "./_lib.mjs";
 
 const HELP = `
 release:tag - Tag the current main commit and push the tag.
@@ -85,7 +96,7 @@ main(async () => {
 
   const changelog = await readChangelog();
   if (changelog) {
-    const escaped = pkg.version.replace(/\./g, "\\.");
+    const escaped = escapeRegex(pkg.version);
     const re = new RegExp(`^## v${escaped}[^\\n]*\\n([\\s\\S]*?)(?=^## v[0-9])`, "m");
     const m = re.exec(changelog);
     if (m) {

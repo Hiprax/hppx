@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.2.6 — CodeQL alert cleanup (2026-05-12)
+
+Repo-hygiene release. No source/API changes; runtime behavior of the
+published `hppx` package is unchanged. Addresses three open CodeQL
+alerts on the repository so the security dashboard is clean.
+
+### Fixed
+
+- **`scripts/release-prepare.mjs` / `scripts/release-tag.mjs`** —
+  Replaced partial regex escapes (`replace(/\./g, "\\.")`) with a shared
+  `escapeRegex()` helper that escapes the full RegExp meta-character set
+  (`.*+?^${}()|[]\`). Clears CodeQL `js/incomplete-sanitization` warnings
+  on both scripts. Input is still constrained to semver in practice, so
+  this is correctness hardening, not a vulnerability fix.
+- **`tests/hppx.coverage.test.ts`** — The "filters dangerous keys from
+  objects nested inside arrays" test deliberately plants a literal
+  `__proto__` own-property on a null-prototype object. Rewrote the
+  assignment with `Object.defineProperty` so CodeQL's
+  `js/invalid-prototype-value` rule no longer flags it as an unintended
+  prototype write. Test semantics are unchanged.
+
+### Added
+
+- **`scripts/_lib.mjs`** now exports `escapeRegex(s)` — full-meta-char
+  regex escaper, used by both release scripts.
+
+### Verified
+
+- `npm run build` / `typecheck` / `lint` / `test` — all green
+  (185 tests, 99.72% stmts, 100% funcs/lines).
+
 ## v0.2.5 — Contributor identity canonicalization (2026-05-12)
 
 Repo-hygiene release. No source/API changes; the published tarball is
