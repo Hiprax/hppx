@@ -1,0 +1,14 @@
+# .mailmap — canonicalize author identities for git shortlog, git log,
+# GitHub's contributors graph/widget, and any other tool that honors
+# this file. Maps the per-user noreply addresses (and any future stray
+# attribution) back to each contributor's canonical name + email.
+#
+# Format (see `git help mailmap`):
+#   Proper Name <proper@email>
+#   <proper@email> <commit@email>
+#   Proper Name <proper@email> <commit@email>
+#   Proper Name <proper@email> Commit Name <commit@email>
+
+Sajadlance <sajadlance@gmail.com> <108609319+Sajadlance@users.noreply.github.com>
+Sajadlance <sajadlance@gmail.com> Sajad Khanmirzaei <108609319+Sajadlance@users.noreply.github.com>
+Hiprax <admin@hiprax.com>
