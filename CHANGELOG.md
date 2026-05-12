@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.2.3 — Dependency upgrades + CI/release automation (2026-05-12)
+
+Dev-dependency refresh plus a one-time GitHub/CI hardening pass. No
+runtime/API changes; the package still ships zero runtime dependencies and
+the public surface is unchanged. Two visible changes: a headline ESLint
+bump to v10 and a full release-automation pipeline on tag push.
+
+### Added — CI / release infrastructure
+
+- **`.github/workflows/ci.yml`.** Build, dts-parity (`check-dts`), types-pack
+  (`check-types-pack` via [`@arethetypeswrong/cli`][attw]), `typecheck`,
+  `lint`, `format:check`, and `test --coverage` across Node 18 / 20 / 22 / 24. Coverage is uploaded to Codecov on the Node 22 leg.
+- **`.github/workflows/release.yml`.** Triggered on `v*.*.*` tag push (and
+  `workflow_dispatch`). Re-runs every quality gate, refuses to publish
+  unless `package.json` `version` matches the tag, runs
+  `npm publish --provenance --access public` via OIDC, then creates a
+  GitHub Release with the matching CHANGELOG section as the body.
+- **`.github/workflows/codeql.yml`.** GitHub Advanced Security CodeQL
+  analysis (`security-and-quality` query suite) on push, pull request, and
+  weekly schedule.
+- **`.github/PULL_REQUEST_TEMPLATE.md`** and `.github/ISSUE_TEMPLATE/*` (bug
+  report, feature request, plus `blank_issues_enabled: false`).
+- **`scripts/_lib.mjs`, `scripts/verify.mjs`, `scripts/new-branch.mjs`,
+  `scripts/sync-main.mjs`, `scripts/release-prepare.mjs`,
+  `scripts/release-tag.mjs`.** Zero-dependency, cross-platform Node scripts
+  that mirror the CI gates locally and drive the release flow.
+- **New npm scripts:** `verify`, `check-types-pack`, `format:check`,
+  `branch`, `sync`, `release:prepare`, `release:tag`.
+- **`@arethetypeswrong/cli` ^0.18.2** added as a devDependency for the new
+  `check-types-pack` gate. Complements the existing
+  `scripts/check-dts-parity.mjs` (parity catches "the two `.d.ts` files
+  disagree on what's exported"; attw catches "the exports map shape lies to
+  consumers about ESM/CJS").
+- **README badges** updated: npm, license, CI, CodeQL, Codecov, Node, zero
+  dependencies. Ordering aligned with the CI workflow names.
+
+[attw]: https://arethetypeswrong.github.io/
+
+### Changed — dependencies
+
+- **ESLint 9.39.4 → 10.3.0** (major). The flat config (`eslint.config.mjs`)
+  the project already uses required no edits to migrate. The published
+  package's `engines.node` stays `>=18` because hppx itself remains
+  Node-18-compatible at runtime; ESLint 10 only affects local development,
+  where contributors now need Node `^20.19.0 || ^22.13.0 || >=24` (matching
+  ESLint 10's own requirement). All `eslint:recommended` defaults that became
+  active in v10 (`no-unassigned-vars`, `no-useless-assignment`,
+  `preserve-caught-error`, stricter `no-shadow-restricted-names`) pass clean
+  against the current source.
+- **`@eslint/js` added as an explicit devDependency at `^10.0.1`.** It was
+  previously hoisted from `eslint`'s tree; making it explicit matches how it's
+  imported in `eslint.config.mjs` and keeps it pinned alongside `eslint` for
+  predictable resolution.
+- **`@typescript-eslint/*` 8.59.1 → 8.59.3** (`eslint-plugin`, `parser`, and
+  the meta `typescript-eslint` package). 8.59.x already declares ESLint 10 in
+  its peer range (`^8.57.0 || ^9.0.0 || ^10.0.0`), so no migration was
+  required.
+- **`@types/node` 25.6.0 → 25.7.0**, **`jest` 30.3.0 → 30.4.2** (patch/minor).
+
+### Verified
+
+- `npm run typecheck` — clean.
+- `npm run lint` — clean under ESLint 10.
+- `npm test` — 185/185 passing, coverage stmts 99.72%, branches 95.01%, funcs
+  100%, lines 100%.
+- `npm run build` — both ESM/CJS bundles emit; DTS rollup succeeds.
+- `npm run check-dts` — `dist/index.d.ts` and `dist/index.d.cts` expose the
+  same 11 symbols.
+- `npm run check-types-pack` — attw reports no issues on the packed tarball.
+- `npm audit` — 0 vulnerabilities.
+- `npm run format:check` — clean.
+
 ## v0.2.2 — Dependency upgrades (2026-05-04)
 
 Dev-dependency refresh. No runtime/API changes; the package still ships zero

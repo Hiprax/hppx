@@ -1,6 +1,6 @@
 {
   "name": "hppx",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
   "license": "MIT",
   "author": "Hiprax",
@@ -49,9 +49,16 @@
     "test:watch": "jest --watch",
     "prepare": "npm run build && npm run check-dts",
     "check-dts": "node scripts/check-dts-parity.mjs",
+    "check-types-pack": "attw --pack .",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\""
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "verify": "node scripts/verify.mjs",
+    "branch": "node scripts/new-branch.mjs",
+    "sync": "node scripts/sync-main.mjs",
+    "release:prepare": "node scripts/release-prepare.mjs",
+    "release:tag": "node scripts/release-tag.mjs"
   },
   "keywords": [
     "hpp",
@@ -66,16 +73,18 @@
     "security"
   ],
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.7.0",
     "@types/supertest": "^7.2.0",
-    "@typescript-eslint/eslint-plugin": "^8.59.1",
-    "@typescript-eslint/parser": "^8.59.1",
-    "eslint": "^9.39.4",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "express": "^5.2.1",
-    "jest": "^30.3.0",
+    "jest": "^30.4.2",
     "prettier": "^3.8.3",
     "rimraf": "^6.1.3",
     "supertest": "^7.2.2",
@@ -83,6 +92,6 @@
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.59.1"
+    "typescript-eslint": "^8.59.3"
   }
 }

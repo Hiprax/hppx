@@ -2,9 +2,11 @@
 
 **Superior HTTP Parameter Pollution protection middleware** for Node.js/Express, written in TypeScript. It sanitizes `req.query`, `req.body`, and `req.params`, blocks prototype-pollution keys, supports nested whitelists, multiple merge strategies, and plays nicely with stacked middlewares.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![npm version](https://img.shields.io/npm/v/hppx)](https://www.npmjs.com/package/hppx)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/Hiprax/hppx/actions/workflows/ci.yml/badge.svg)](https://github.com/Hiprax/hppx/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Hiprax/hppx/actions/workflows/codeql.yml/badge.svg)](https://github.com/Hiprax/hppx/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/Hiprax/hppx/branch/main/graph/badge.svg)](https://codecov.io/gh/Hiprax/hppx)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-green.svg)](https://nodejs.org/)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-0-brightgreen.svg)](#)
 
