@@ -153,6 +153,8 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 | `maxArrayLength` | `number` | `1000`  | >= 1     | Maximum array length. Arrays are truncated before processing.                         |
 | `maxKeyLength`   | `number` | `200`   | 1 - 1000 | Maximum key string length. Longer keys are silently dropped.                          |
 
+> **Note — in-order, in-place commit model:** Sources are processed in the order specified by the `sources` array and each source's sanitized result is committed in-place to `req` before the next source begins. When `maxDepth` or `maxKeys` is exceeded, the error is forwarded to `next()` immediately — but **any earlier sources that already completed are already sanitized on `req`** while the throwing source stays raw. Error handlers should not assume an atomic all-or-nothing transform across sources.
+
 **Behavior & Callbacks:**
 
 | Option                | Type                              | Default | Description                                                                                                                                                                                              |

@@ -251,6 +251,55 @@ describe("scalar–dotted key collision — current intended behavior (C3)", () 
   });
 });
 
+describe("cross-source partial mutation on limit error — in-order in-place commit model (C9)", () => {
+  // Pins: sources are processed in order (the `sources` array) and each source's sanitized
+  // result is committed in-place to req via setReqPropertySafe (src/index.ts:888) before the
+  // next source begins. When a later source exceeds maxDepth or maxKeys, the error is forwarded
+  // to next() immediately — but any earlier sources that already completed are already sanitized
+  // on req while the throwing source stays raw.
+  // This is intentional: error handlers must NOT assume an atomic all-or-nothing transform.
+  // Staging/rollback is deliberately absent to preserve __hppxProcessed_* flag timing and
+  // the multi-middleware incremental-whitelist contract.
+
+  test("earlier source (query) committed in-place before later source (body) throws on maxDepth — pins current behavior", () => {
+    // Pins the in-order, in-place commit model: req.query is reduced and written
+    // to req before body processing even starts. A body that exceeds maxDepth causes
+    // expandObjectPaths (src/index.ts:863) to throw, which the outer catch forwards to
+    // next(error). At that point req.query is already { x: "2" } and req.body is unchanged.
+    const middleware = hppx({
+      maxDepth: 1,
+      sources: ["query", "body"],
+      checkBodyContentType: "any",
+      logPollution: false,
+    });
+
+    const originalBody = { a: { b: { c: 1 } } }; // depth 3 > maxDepth 1 → throws in expandObjectPaths
+    const req: any = {
+      query: { x: ["1", "2"] }, // flat array: succeeds; reduced to { x: "2" } by keepLast
+      body: originalBody, // deep object: throws at depth 2 inside expandObjectPaths
+      path: "/test",
+      headers: {},
+    };
+    const res: any = {};
+    let capturedError: unknown = undefined;
+    let nextCalled = false;
+    const next = (err?: unknown) => {
+      nextCalled = true;
+      capturedError = err;
+    };
+
+    middleware(req, res, next);
+
+    // next was called with an Error — the body maxDepth throw propagated to next()
+    expect(nextCalled).toBe(true);
+    expect(capturedError).toBeInstanceOf(Error);
+    // Earlier source (query) was committed in-place before the body throw
+    expect(req.query).toEqual({ x: "2" });
+    // Later source (body) is the original reference — hppx never wrote to it before the throw
+    expect(req.body).toBe(originalBody);
+  });
+});
+
 describe("combine + whitelist interaction — current intended behavior (C4)", () => {
   // Pins: detectAndReduce stores the original (pre-combine) cloned array in the polluted tree
   // (src/index.ts:592), then mergeValues flattens it for the cleaned output. Afterwards,
