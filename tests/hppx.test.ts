@@ -294,7 +294,7 @@ describe("hppx - req.params end-to-end (C1)", () => {
 
   // T2.2 — pins current intended behavior: the params source drives
   // onPollutionDetected and strict mode identically to query/body.
-  it("T2.2a: params source fires onPollutionDetected with source:\"params\" and fully-qualified key", async () => {
+  it('T2.2a: params source fires onPollutionDetected with source:"params" and fully-qualified key', async () => {
     const events: { source: string; pollutedKeys: string[] }[] = [];
     const app = express();
     app.get(
@@ -318,7 +318,7 @@ describe("hppx - req.params end-to-end (C1)", () => {
     expect(events).toEqual([{ source: "params", pollutedKeys: ["params.id"] }]);
   });
 
-  it("T2.2b: params source triggers strict-mode 400 with pollutedParameters including \"params.id\"", async () => {
+  it('T2.2b: params source triggers strict-mode 400 with pollutedParameters including "params.id"', async () => {
     const app = express();
     app.get(
       "/item",

@@ -176,3 +176,77 @@ describe("preserveNull behavior", () => {
     expect(res.body.body.b).toBe("ok");
   });
 });
+
+describe("empty-array characterization — current intended behavior (C2)", () => {
+  // Pins: keepLast/keepFirst on an empty array reduces to undefined because mergeValues
+  // selects values[last]/values[0] from an empty array (both undefined). combine reduces
+  // to [] because the accumulator starts empty and has nothing to push. Pollution IS
+  // recorded in all three cases — the empty array is treated as a duplicate-parameter
+  // event at the key level. Do NOT change mergeValues or the pollution recording logic.
+
+  test("keepLast: sanitize({x:[]}) -> cleaned.x is undefined — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "keepLast" });
+    expect(result).toEqual({ x: undefined });
+  });
+
+  test("keepFirst: sanitize({x:[]}) -> cleaned.x is undefined — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "keepFirst" });
+    expect(result).toEqual({ x: undefined });
+  });
+
+  test("combine: sanitize({x:[]}) -> cleaned.x is [] — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "combine" });
+    expect(result).toEqual({ x: [] });
+  });
+
+  test("middleware: empty-array body key is recorded in bodyPolluted and fires onPollutionDetected", async () => {
+    // Pins: even with no actual duplicate scalar values, an empty array at a body key
+    // is treated as pollution. bodyPolluted captures the original [], and
+    // onPollutionDetected fires. Do NOT suppress the pollution signal for empty arrays.
+    const calls: { source: string; pollutedKeys: string[] }[] = [];
+    const app = express();
+    app.use(express.json());
+    app.use(
+      hppx({
+        sources: ["body"],
+        checkBodyContentType: "any",
+        mergeStrategy: "keepLast",
+        logPollution: false,
+        onPollutionDetected: (_req, info) => calls.push(info),
+      }),
+    );
+    app.post("/test", (req, res) => res.json({ bodyPolluted: req.bodyPolluted }));
+    const res = await request(app)
+      .post("/test")
+      .set("content-type", "application/json")
+      .send({ x: [] });
+    // bodyPolluted must capture the original empty array
+    expect(res.body.bodyPolluted).toEqual({ x: [] });
+    // onPollutionDetected must fire once for the body source
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ source: "body", pollutedKeys: ["body.x"] });
+  });
+});
+
+describe("scalar–dotted key collision — current intended behavior (C3)", () => {
+  // Pins: expandObjectPaths processes keys in JavaScript object insertion order.
+  // When a plain key and a dotted key share a path prefix ('a' and 'a.b'),
+  // the LAST-processed key wins by overwriting. This is order-dependent and lossy
+  // by design — hppx is an HTTP pollution guard, not a key-path merger. Do NOT
+  // change expandObjectPaths or setIn to alter this ordering.
+
+  test("collision {a:1,'a.b':2} -> {a:{b:2}}: dotted key wins when processed last — pins current behavior", () => {
+    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and setIn
+    // overwrites result.a (scalar 1) with {b:2} because setIn replaces any
+    // non-plain-object at an intermediate path segment with a fresh {}.
+    const result = sanitize({ a: 1, "a.b": 2 } as any);
+    expect(result).toEqual({ a: { b: 2 } });
+  });
+
+  test("collision reversed {'a.b':2,a:1} -> {a:1}: plain key wins when processed last — pins current behavior", () => {
+    // 'a' is processed after 'a.b' expansion; plain assignment overwrites the nested
+    // object {b:2} with the scalar 1 because plain (non-dotted) keys bypass setIn.
+    const result = sanitize({ "a.b": 2, a: 1 } as any);
+    expect(result).toEqual({ a: 1 });
+  });
+});
