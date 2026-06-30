@@ -34,14 +34,30 @@ export const log = {
   hr: () => console.log(c.gray("-".repeat(60))),
 };
 
+// On Windows, Node concatenates an args array into a cmd.exe command line without
+// quoting, letting the shell re-split tokens that contain spaces. Build a single
+// properly-quoted string instead, which also eliminates the DEP0190 warning (which
+// fires only when a non-empty args array is combined with shell: true).
+function quoteForCmd(arg) {
+  const s = String(arg);
+  if (s.length === 0) return '""';
+  if (/[\s"&|<>^()%!]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
 export function run(cmd, args, opts = {}) {
   const { silent = false, cwd = ROOT, env = process.env, allowFail = false } = opts;
+  const isWin = process.platform === "win32";
+  const spawnCmd = isWin ? [cmd, ...args].map(quoteForCmd).join(" ") : cmd;
+  const spawnArgs = isWin ? [] : args;
   return new Promise((resolveCmd, rejectCmd) => {
-    const child = spawn(cmd, args, {
+    const child = spawn(spawnCmd, spawnArgs, {
       cwd,
       env,
       stdio: silent ? "pipe" : "inherit",
-      shell: process.platform === "win32",
+      shell: isWin,
     });
     let stdoutBuf = "";
     let stderrBuf = "";
