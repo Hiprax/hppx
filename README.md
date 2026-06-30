@@ -481,6 +481,39 @@ arrays reduced. It does **not** return `{cleaned, pollutedTree, pollutedKeys}`
 options (`sources`, `excludePaths`, `strict`, callbacks, etc.) are silently
 ignored when passed to `sanitize()`.
 
+**6. `whitelist` is a data-preservation control; `strict` / `logPollution` are wire-level detection signals.**
+
+These two concerns are deliberately independent:
+
+- **`whitelist`** controls what happens _after_ reduction. Whitelisted keys have their raw
+  arrays moved back from the polluted tree into `req.query` (etc.) and are pruned from
+  `req.queryPolluted`. The route handler sees the original multi-value array for whitelisted
+  keys — they are not further reduced.
+- **`strict`** and **`logPollution`** are driven by pre-restoration data — the `pollutedKeys`
+  set returned by `detectAndReduce` captures every parameter that arrived duplicated on the
+  wire, regardless of whitelist configuration. Because `anyPollutionDetected` is set from
+  that pre-restoration snapshot, a whitelisted key that arrives duplicated on the wire still
+  causes `strict: true` to return HTTP 400 and `logPollution: true` to emit a warning.
+
+If you need certain keys to carry multiple values without triggering strict mode, do not use
+`strict: true` in combination with `whitelist` for those keys — or handle those keys in a
+separate, non-strict middleware.
+
+**7. `onPollutionDetected` and `req.*Polluted` reflect the post-restoration state.**
+
+After `detectAndReduce` collects all duplicated keys, `moveWhitelistedFromPolluted` restores
+whitelisted entries back into `req.query` (etc.) and prunes them from `req.queryPolluted`.
+Two consequences:
+
+- `req.queryPolluted` (and `req.bodyPolluted`, `req.paramsPolluted`) never contains whitelisted
+  keys — they have already been moved back to the main request object.
+- `onPollutionDetected` is invoked only when `req.queryPolluted` is **non-empty** after
+  restoration. If _all_ polluted keys are whitelisted, the polluted tree is `{}` after
+  restoration and the callback is **not** called (even though `logPollution` still fires for
+  the wire-level signal). If _some_ (but not all) keys are whitelisted, the callback fires for
+  that source — and its `info.pollutedKeys` array contains **all** pre-restoration polluted
+  keys (both whitelisted and non-whitelisted ones).
+
 ---
 
 ## License
