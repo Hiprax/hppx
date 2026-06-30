@@ -244,6 +244,7 @@ function setReqPropertySafe(
   key: string,
   value: unknown,
   onFailure?: (message: string) => void,
+  enumerable = true,
 ): boolean {
   try {
     const desc = Object.getOwnPropertyDescriptor(target, key);
@@ -252,7 +253,7 @@ function setReqPropertySafe(
         value,
         writable: true,
         configurable: true,
-        enumerable: true,
+        enumerable,
       });
       return true;
     }
@@ -888,7 +889,10 @@ export default function hppx(options: HppxOptions = {}) {
           setReqPropertySafe(req, source, cleaned, warn);
 
           // Attach polluted object (always present as {} when source processed)
-          setReqPropertySafe(req, pollutedKey, pollutedTree, warn);
+          // Non-enumerable: keeps attacker-controlled duplicate payload out of
+          // generic req serializations (JSON.stringify, spreads, audit middleware)
+          // while remaining readable by name — consistent with __hppxProcessed_*.
+          setReqPropertySafe(req, pollutedKey, pollutedTree, warn, false);
           // Mark as processed in a tamper-resistant, non-enumerable way so it is not
           // visible to user code, response serializers, or attackers.
           try {

@@ -707,6 +707,105 @@ describe("hppx - Security Features", () => {
     });
   });
 
+  describe("Non-enumerable *Polluted properties", () => {
+    function invokeDirectly(mw: ReturnType<typeof hppx>, reqOverrides: Record<string, unknown>) {
+      const req: any = { headers: {}, ...reqOverrides };
+      const res: any = {};
+      const next = jest.fn();
+      mw(req, res, next);
+      return { req, next };
+    }
+
+    test("queryPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "queryPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("queryPolluted is readable by name and holds the raw duplicate tree", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+
+    test("bodyPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false, checkBodyContentType: "any" });
+      const { req } = invokeDirectly(mw, { body: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "bodyPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("paramsPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { params: { id: ["a", "b"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "paramsPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("queryPolluted absent from JSON.stringify(req) and Object.keys(req)", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const serialized = JSON.stringify(req);
+      // Non-enumerable own properties are excluded from JSON serialization
+      expect(serialized).not.toContain("queryPolluted");
+      // Object.keys only returns own enumerable keys
+      expect(Object.keys(req)).not.toContain("queryPolluted");
+      // The reduced-away raw values should also not be serialized
+      expect(serialized).not.toContain('"1","2"');
+    });
+
+    test("cleaned query source remains enumerable and present in JSON.stringify(req)", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "query");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(true);
+      expect(Object.keys(req)).toContain("query");
+      expect(JSON.stringify(req)).toContain('"query"');
+    });
+
+    test("multi-middleware: second instance whitelist restoration works; queryPolluted stays non-enumerable", () => {
+      // First middleware: no whitelist — reduces both x and y
+      const mw1 = hppx({ logPollution: false });
+      // Second middleware: whitelist x — restores x from polluted tree
+      const mw2 = hppx({ logPollution: false, whitelist: ["x"] });
+
+      const req: any = {
+        headers: {},
+        query: { x: ["1", "2"], y: ["3", "4"] },
+      };
+      const res: any = {};
+
+      mw1(req, res, jest.fn());
+
+      // After first pass: both reduced, queryPolluted is non-enumerable
+      expect(req.query.x).toBe("2");
+      expect(req.query.y).toBe("4");
+      expect(Object.getOwnPropertyDescriptor(req, "queryPolluted")!.enumerable).toBe(false);
+
+      mw2(req, res, jest.fn());
+
+      // After second pass (whitelist restoration only): x is restored as raw array
+      expect(req.query.x).toEqual(["1", "2"]);
+      // y is still the reduced scalar (not whitelisted)
+      expect(req.query.y).toBe("4");
+      // queryPolluted is still non-enumerable after in-place mutation by mw2
+      expect(Object.getOwnPropertyDescriptor(req, "queryPolluted")!.enumerable).toBe(false);
+      // And still absent from serialization
+      expect(Object.keys(req)).not.toContain("queryPolluted");
+    });
+  });
+
   describe("Shared subtree handling (path-stack cycle detection)", () => {
     test("preserves shared object subtree (acyclic) on every occurrence", () => {
       // A shared but acyclic object reference must appear cloned at every site.
