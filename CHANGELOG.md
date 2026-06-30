@@ -40,7 +40,7 @@ exceeded` on large arrays.** The previous `acc.push(...v)` spread placed
 
 ### Added — Tests
 
-New and extended test coverage (220 total tests, 10 suites):
+New and extended test coverage (221 total tests, 10 suites):
 
 - **Non-enumerable `*Polluted`:** `Object.getOwnPropertyDescriptor` assertions
   for `queryPolluted`, `bodyPolluted`, and `paramsPolluted`; readable-by-name
@@ -60,7 +60,8 @@ New and extended test coverage (220 total tests, 10 suites):
 - **Charset-suffixed urlencoded body:** `Content-Type:
 application/x-www-form-urlencoded; charset=UTF-8` still triggers
   sanitization and populates `req.bodyPolluted` under the default
-  `checkBodyContentType` (`tests/hppx.test.ts`).
+  `checkBodyContentType`, including a lowercase charset suffix and an
+  uppercase media-type prefix (`tests/hppx.edgecases.test.ts`).
 - **`run()` arg-quoting regression:** exercises the real `run()` through a Node
   ESM subprocess; asserts a space-containing argument survives as a single
   `argv` entry on all platforms (`tests/scripts.run.test.ts`).
@@ -86,7 +87,7 @@ application/x-www-form-urlencoded; charset=UTF-8` still triggers
 - `npm run format:check` — clean.
 - `npm run check-dts` — `.d.ts` / `.d.cts` symbol parity holds (11 symbols).
 - `npm run check-types-pack` — attw no problems found.
-- `npm test` — 220/220 passing (99.72% stmts, 95.03% branches,
+- `npm test` — 221/221 passing (99.72% stmts, 95.03% branches,
   100% funcs/lines).
 - `npm audit` — 0 vulnerabilities.
 

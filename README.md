@@ -19,7 +19,7 @@
 - **Multiple merge strategies** — `keepFirst`, `keepLast` (default), `combine`
 - **Enhanced security:**
   - Blocks dangerous keys: `__proto__`, `prototype`, `constructor`
-  - Prevents null-byte injection in keys
+  - Rejects control, bidirectional-override, and BOM characters in keys (null byte included)
   - Rejects malformed keys (dot/bracket-only patterns)
   - Validates key lengths to prevent DoS attacks
   - Limits array sizes to prevent memory exhaustion

@@ -74,9 +74,10 @@ describe("hppx - content type handling", () => {
     expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
   });
 
-  test("lowercase charset suffix also passes (isUrlEncodedContentType lowercases header value)", async () => {
-    // Pins: the helper calls .toLowerCase() on the content-type value before startsWith,
-    // so "charset=utf-8" and "charset=UTF-8" are both accepted.
+  test("lowercase charset suffix still matches (media-type prefix already lowercase)", async () => {
+    // The media-type prefix is already lowercase, so startsWith matches regardless of the
+    // charset suffix's case — a charset-suffixed header is never a sanitization bypass.
+    // (The load-bearing .toLowerCase() is pinned separately by the uppercase-prefix test.)
     const app = express();
     app.use(express.urlencoded({ extended: true }));
     app.use(hppx({ logPollution: false }));
@@ -90,6 +91,24 @@ describe("hppx - content type handling", () => {
     expect(res.status).toBe(200);
     expect(res.body.body.x).toBe("2");
     expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
+  });
+
+  test("uppercase media-type prefix is still sanitized (isUrlEncodedContentType lowercases the header)", () => {
+    // Pins the load-bearing .toLowerCase() in isUrlEncodedContentType: an uppercase
+    // media-type prefix only matches startsWith("application/x-www-form-urlencoded")
+    // AFTER lowercasing. Direct invocation isolates the helper from body-parser —
+    // remove .toLowerCase() and the body source is skipped, leaving req.body.x as the
+    // raw ["1","2"] array, which fails this test.
+    const mw = hppx({ logPollution: false });
+    const req: any = {
+      headers: { "content-type": "APPLICATION/X-WWW-FORM-URLENCODED; charset=UTF-8" },
+      body: { x: ["1", "2"] },
+    };
+    const next = jest.fn();
+    mw(req, {} as any, next);
+    expect(next).toHaveBeenCalledWith();
+    expect(req.body.x).toBe("2");
+    expect(req.bodyPolluted.x).toEqual(["1", "2"]);
   });
 });
 

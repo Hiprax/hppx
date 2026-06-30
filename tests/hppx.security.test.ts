@@ -6,8 +6,8 @@ describe("hppx - Security Features", () => {
   describe("Array length limits (DoS protection)", () => {
     test("limits array length to prevent memory exhaustion", () => {
       // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
-      // keepLast selects values[99] = 99. Pins truncation depth (src/index.ts:325-326)
-      // and mergeValues keepLast path (src/index.ts:364-365) — current intended behavior.
+      // keepLast selects values[99] = 99. Pins truncation depth (safeDeepClone's
+      // maxArrayLength slice) and the mergeValues keepLast path — current intended behavior.
       const largeArray = Array.from({ length: 2000 }, (_, i) => i);
       const input = { x: largeArray };
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "keepLast" });
@@ -25,7 +25,7 @@ describe("hppx - Security Features", () => {
     test("maxArrayLength with combine strategy truncates then flattens — pins current behavior", () => {
       // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
       // combine pushes each scalar into one array -> length 100, last element 99.
-      // Pins truncation (src/index.ts:325-326) and mergeValues combine path (src/index.ts:368-373).
+      // Pins truncation (safeDeepClone's maxArrayLength slice) and the mergeValues combine path.
       const largeArray = Array.from({ length: 2000 }, (_, i) => i);
       const input = { x: largeArray };
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "combine" });
