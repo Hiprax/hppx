@@ -54,6 +54,43 @@ describe("hppx - content type handling", () => {
       .send({ x: [1, 2], y: "z" });
     expect(res.body).toEqual({ body: { x: 2, y: "z" }, bodyPolluted: { x: [1, 2] } });
   });
+
+  test("charset-suffixed urlencoded content-type is still sanitized (default checkBodyContentType)", async () => {
+    // Pins: isUrlEncodedContentType uses startsWith, not strict equality, so browsers and
+    // fetch clients appending "; charset=UTF-8" to the content-type do not bypass sanitization.
+    // Regression: a change to === would silently skip the most common real urlencoded variant.
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(hppx({ logPollution: false }));
+    app.post("/t", (req, res) =>
+      res.json({ body: req.body, bodyPolluted: req.bodyPolluted || {} }),
+    );
+    const res = await request(app)
+      .post("/t")
+      .set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+      .send("x=1&x=2");
+    expect(res.status).toBe(200);
+    expect(res.body.body.x).toBe("2");
+    expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
+  });
+
+  test("lowercase charset suffix also passes (isUrlEncodedContentType lowercases header value)", async () => {
+    // Pins: the helper calls .toLowerCase() on the content-type value before startsWith,
+    // so "charset=utf-8" and "charset=UTF-8" are both accepted.
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(hppx({ logPollution: false }));
+    app.post("/t", (req, res) =>
+      res.json({ body: req.body, bodyPolluted: req.bodyPolluted || {} }),
+    );
+    const res = await request(app)
+      .post("/t")
+      .set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+      .send("x=1&x=2");
+    expect(res.status).toBe(200);
+    expect(res.body.body.x).toBe("2");
+    expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
+  });
 });
 
 describe("hppx - limits and safety", () => {
