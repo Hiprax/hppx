@@ -110,25 +110,34 @@ describe("hppx - Performance Optimizations", () => {
 
   describe("Memory efficiency", () => {
     test("limits cache sizes to prevent memory leaks", () => {
-      // Create many unique paths to test cache limits
+      // Flood the path-segment cache (limit 500) with 2000 unique keys to force
+      // clear-on-full eviction. The cache must stay bounded AND keep producing
+      // correct output — eviction must not corrupt or permanently disable parsing.
+      __resetPathSegmentCache();
+      let lastOut: Record<string, unknown> = {};
       for (let i = 0; i < 2000; i++) {
-        const input = { [`unique_key_${i}`]: [1, 2] };
-        sanitize(input, { mergeStrategy: "keepLast" });
+        lastOut = sanitize({ [`unique_key_${i}`]: [1, 2] }, { mergeStrategy: "keepLast" });
       }
-
-      // If caches weren't limited, this would consume significant memory
-      // Test passes if it completes without memory issues
-      expect(true).toBe(true);
+      // Every flooded key is still correctly reduced after eviction (non-tautological:
+      // a regression that broke parsing under eviction would fail this assertion).
+      expect(lastOut).toEqual({ unique_key_1999: 2 });
+      // A dotted key still expands into a nested object once the cache has cycled —
+      // proving the parser survived clear-on-full eviction rather than silently breaking.
+      expect(sanitize({ "a.b": [1, 2] }, { mergeStrategy: "keepLast" })).toEqual({
+        a: { b: 2 },
+      });
     });
 
     test("array length limits prevent memory exhaustion", () => {
+      // Distinct elements 0..9999; safeDeepClone slices to 100 (indices 0..99).
+      // keepLast selects values[99] = 99. Pins truncation (safeDeepClone's
+      // maxArrayLength slice) and the mergeValues keepLast path — current intended behavior.
       const hugeArray = Array.from({ length: 10000 }, (_, i) => i);
       const input = { data: hugeArray };
 
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "keepLast" });
 
-      // Should complete without running out of memory
-      expect(cleaned).toBeDefined();
+      expect(cleaned.data).toBe(99);
     });
   });
 

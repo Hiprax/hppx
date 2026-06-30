@@ -54,6 +54,62 @@ describe("hppx - content type handling", () => {
       .send({ x: [1, 2], y: "z" });
     expect(res.body).toEqual({ body: { x: 2, y: "z" }, bodyPolluted: { x: [1, 2] } });
   });
+
+  test("charset-suffixed urlencoded content-type is still sanitized (default checkBodyContentType)", async () => {
+    // Pins: isUrlEncodedContentType uses startsWith, not strict equality, so browsers and
+    // fetch clients appending "; charset=UTF-8" to the content-type do not bypass sanitization.
+    // Regression: a change to === would silently skip the most common real urlencoded variant.
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(hppx({ logPollution: false }));
+    app.post("/t", (req, res) =>
+      res.json({ body: req.body, bodyPolluted: req.bodyPolluted || {} }),
+    );
+    const res = await request(app)
+      .post("/t")
+      .set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+      .send("x=1&x=2");
+    expect(res.status).toBe(200);
+    expect(res.body.body.x).toBe("2");
+    expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
+  });
+
+  test("lowercase charset suffix still matches (media-type prefix already lowercase)", async () => {
+    // The media-type prefix is already lowercase, so startsWith matches regardless of the
+    // charset suffix's case — a charset-suffixed header is never a sanitization bypass.
+    // (The load-bearing .toLowerCase() is pinned separately by the uppercase-prefix test.)
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(hppx({ logPollution: false }));
+    app.post("/t", (req, res) =>
+      res.json({ body: req.body, bodyPolluted: req.bodyPolluted || {} }),
+    );
+    const res = await request(app)
+      .post("/t")
+      .set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+      .send("x=1&x=2");
+    expect(res.status).toBe(200);
+    expect(res.body.body.x).toBe("2");
+    expect(res.body.bodyPolluted.x).toEqual(["1", "2"]);
+  });
+
+  test("uppercase media-type prefix is still sanitized (isUrlEncodedContentType lowercases the header)", () => {
+    // Pins the load-bearing .toLowerCase() in isUrlEncodedContentType: an uppercase
+    // media-type prefix only matches startsWith("application/x-www-form-urlencoded")
+    // AFTER lowercasing. Direct invocation isolates the helper from body-parser —
+    // remove .toLowerCase() and the body source is skipped, leaving req.body.x as the
+    // raw ["1","2"] array, which fails this test.
+    const mw = hppx({ logPollution: false });
+    const req: any = {
+      headers: { "content-type": "APPLICATION/X-WWW-FORM-URLENCODED; charset=UTF-8" },
+      body: { x: ["1", "2"] },
+    };
+    const next = jest.fn();
+    mw(req, {} as any, next);
+    expect(next).toHaveBeenCalledWith();
+    expect(req.body.x).toBe("2");
+    expect(req.bodyPolluted.x).toEqual(["1", "2"]);
+  });
 });
 
 describe("hppx - limits and safety", () => {
@@ -174,5 +230,226 @@ describe("preserveNull behavior", () => {
     // null should be stripped (converted to undefined, which is omitted from JSON)
     expect(res.body.body.a).toBeUndefined();
     expect(res.body.body.b).toBe("ok");
+  });
+});
+
+describe("empty-array characterization — current intended behavior (C2)", () => {
+  // Pins: keepLast/keepFirst on an empty array reduces to undefined because mergeValues
+  // selects values[last]/values[0] from an empty array (both undefined). combine reduces
+  // to [] because the accumulator starts empty and has nothing to push. Pollution IS
+  // recorded in all three cases — the empty array is treated as a duplicate-parameter
+  // event at the key level. Do NOT change mergeValues or the pollution recording logic.
+
+  test("keepLast: sanitize({x:[]}) -> cleaned.x is undefined — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "keepLast" });
+    expect(result).toEqual({ x: undefined });
+  });
+
+  test("keepFirst: sanitize({x:[]}) -> cleaned.x is undefined — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "keepFirst" });
+    expect(result).toEqual({ x: undefined });
+  });
+
+  test("combine: sanitize({x:[]}) -> cleaned.x is [] — pins current behavior", () => {
+    const result = sanitize({ x: [] } as any, { mergeStrategy: "combine" });
+    expect(result).toEqual({ x: [] });
+  });
+
+  test("middleware: empty-array body key is recorded in bodyPolluted and fires onPollutionDetected", async () => {
+    // Pins: even with no actual duplicate scalar values, an empty array at a body key
+    // is treated as pollution. bodyPolluted captures the original [], and
+    // onPollutionDetected fires. Do NOT suppress the pollution signal for empty arrays.
+    const calls: { source: string; pollutedKeys: string[] }[] = [];
+    const app = express();
+    app.use(express.json());
+    app.use(
+      hppx({
+        sources: ["body"],
+        checkBodyContentType: "any",
+        mergeStrategy: "keepLast",
+        logPollution: false,
+        onPollutionDetected: (_req, info) => calls.push(info),
+      }),
+    );
+    app.post("/test", (req, res) => res.json({ bodyPolluted: req.bodyPolluted }));
+    const res = await request(app)
+      .post("/test")
+      .set("content-type", "application/json")
+      .send({ x: [] });
+    // bodyPolluted must capture the original empty array
+    expect(res.body.bodyPolluted).toEqual({ x: [] });
+    // onPollutionDetected must fire once for the body source
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ source: "body", pollutedKeys: ["body.x"] });
+  });
+});
+
+describe("scalar–dotted key collision — current intended behavior (C3)", () => {
+  // Pins: expandObjectPaths processes keys in JavaScript object insertion order.
+  // When a plain key and a dotted key share a path prefix ('a' and 'a.b'),
+  // the LAST-processed key wins by overwriting. This is order-dependent and lossy
+  // by design — hppx is an HTTP pollution guard, not a key-path merger. Do NOT
+  // change expandObjectPaths or setIn to alter this ordering.
+
+  test("collision {a:1,'a.b':2} -> {a:{b:2}}: dotted key wins when processed last — pins current behavior", () => {
+    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and setIn
+    // overwrites result.a (scalar 1) with {b:2} because setIn replaces any
+    // non-plain-object at an intermediate path segment with a fresh {}.
+    const result = sanitize({ a: 1, "a.b": 2 } as any);
+    expect(result).toEqual({ a: { b: 2 } });
+  });
+
+  test("collision reversed {'a.b':2,a:1} -> {a:1}: plain key wins when processed last — pins current behavior", () => {
+    // 'a' is processed after 'a.b' expansion; plain assignment overwrites the nested
+    // object {b:2} with the scalar 1 because plain (non-dotted) keys bypass setIn.
+    const result = sanitize({ "a.b": 2, a: 1 } as any);
+    expect(result).toEqual({ a: 1 });
+  });
+});
+
+describe("cross-source partial mutation on limit error — in-order in-place commit model (C9)", () => {
+  // Pins: sources are processed in order (the `sources` array) and each source's sanitized
+  // result is committed in-place to req via setReqPropertySafe (src/index.ts:888) before the
+  // next source begins. When a later source exceeds maxDepth or maxKeys, the error is forwarded
+  // to next() immediately — but any earlier sources that already completed are already sanitized
+  // on req while the throwing source stays raw.
+  // This is intentional: error handlers must NOT assume an atomic all-or-nothing transform.
+  // Staging/rollback is deliberately absent to preserve __hppxProcessed_* flag timing and
+  // the multi-middleware incremental-whitelist contract.
+
+  test("earlier source (query) committed in-place before later source (body) throws on maxDepth — pins current behavior", () => {
+    // Pins the in-order, in-place commit model: req.query is reduced and written
+    // to req before body processing even starts. A body that exceeds maxDepth causes
+    // expandObjectPaths (src/index.ts:863) to throw, which the outer catch forwards to
+    // next(error). At that point req.query is already { x: "2" } and req.body is unchanged.
+    const middleware = hppx({
+      maxDepth: 1,
+      sources: ["query", "body"],
+      checkBodyContentType: "any",
+      logPollution: false,
+    });
+
+    const originalBody = { a: { b: { c: 1 } } }; // depth 3 > maxDepth 1 → throws in expandObjectPaths
+    const req: any = {
+      query: { x: ["1", "2"] }, // flat array: succeeds; reduced to { x: "2" } by keepLast
+      body: originalBody, // deep object: throws at depth 2 inside expandObjectPaths
+      path: "/test",
+      headers: {},
+    };
+    const res: any = {};
+    let capturedError: unknown = undefined;
+    let nextCalled = false;
+    const next = (err?: unknown) => {
+      nextCalled = true;
+      capturedError = err;
+    };
+
+    middleware(req, res, next);
+
+    // next was called with an Error — the body maxDepth throw propagated to next()
+    expect(nextCalled).toBe(true);
+    expect(capturedError).toBeInstanceOf(Error);
+    // Earlier source (query) was committed in-place before the body throw
+    expect(req.query).toEqual({ x: "2" });
+    // Later source (body) is the original reference — hppx never wrote to it before the throw
+    expect(req.body).toBe(originalBody);
+  });
+});
+
+describe("combine + whitelist interaction — current intended behavior (C4)", () => {
+  // Pins: detectAndReduce stores the original (pre-combine) cloned array in the polluted tree
+  // (src/index.ts:592), then mergeValues flattens it for the cleaned output. Afterwards,
+  // moveWhitelistedFromPolluted restores the raw polluted-tree entry into cleaned for whitelisted
+  // keys (src/index.ts:487-516). This means whitelisted keys preserve the un-flattened array —
+  // the data-preservation contract documented in the README as "Keys allowed to remain as arrays".
+  // Do NOT alter this two-pass flow (detectAndReduce → moveWhitelistedFromPolluted).
+
+  test("combine + whitelist: whitelisted key restored as raw un-flattened array — pins current behavior", () => {
+    // x = [["1"],["2"]]: combine would flatten to ["1","2"], but whitelist ["x"] causes
+    // moveWhitelistedFromPolluted to restore the polluted-tree entry [["1"],["2"]] (the
+    // original cloned nested array) back into cleaned, overwriting the combined output.
+    const result = sanitize({ x: [["1"], ["2"]] } as any, {
+      mergeStrategy: "combine",
+      whitelist: ["x"],
+    });
+    expect(result.x).toEqual([["1"], ["2"]]);
+  });
+
+  test("combine + whitelist: non-whitelisted key still gets combine-flattened output — pins current behavior", () => {
+    // x (whitelisted) is restored as the raw nested array; y (not whitelisted) remains as the
+    // combine-flattened output ["a","b"] — demonstrating both behaviors in one call.
+    const result = sanitize({ x: [["1"], ["2"]], y: [["a"], ["b"]] } as any, {
+      mergeStrategy: "combine",
+      whitelist: ["x"],
+    });
+    expect(result.x).toEqual([["1"], ["2"]]); // whitelisted: raw un-flattened restored
+    expect(result.y).toEqual(["a", "b"]); // non-whitelisted: combine-flattened
+  });
+
+  test("combine + whitelist middleware: req.queryPolluted pruned empty for whitelisted key — pins current behavior", async () => {
+    // Pins: after moveWhitelistedFromPolluted restores x from polluted tree, pollutedTree.x is
+    // deleted (src/index.ts:511), so req.queryPolluted becomes {} even though pollution was
+    // detected. The query value is preserved as the raw array from the polluted tree.
+    const app = express();
+    app.use(
+      hppx({
+        sources: ["query"],
+        mergeStrategy: "combine",
+        whitelist: ["x"],
+        logPollution: false,
+      }),
+    );
+    app.get("/test", (req, res) =>
+      res.json({ query: req.query, queryPolluted: req.queryPolluted }),
+    );
+    const res = await request(app).get("/test?x=1&x=2");
+    expect(res.status).toBe(200);
+    // x restored from polluted tree (raw array ["1","2"] — combine output equals polluted entry
+    // for flat-string query params, but the restoration path is the same).
+    expect(res.body.query.x).toEqual(["1", "2"]);
+    // Polluted tree pruned of x after whitelist restoration — current intended behavior.
+    expect(res.body.queryPolluted).toEqual({});
+  });
+});
+
+describe("combine merge — stack-safety and output identity", () => {
+  // Pins: mergeValues combine branch uses an iterative flatten (no call-stack bound).
+  // Output must be byte-identical to the previous spread-based reduce.
+
+  test("output identity: nested integer arrays flatten correctly", () => {
+    const result = sanitize(
+      {
+        a: [
+          [1, 2],
+          [3, 4],
+        ],
+      } as any,
+      { mergeStrategy: "combine" },
+    );
+    expect(result.a).toEqual([1, 2, 3, 4]);
+  });
+
+  test("output identity: scalar + array mix flattens in order", () => {
+    // a = [5, [6, 7]]: scalars are kept in-place; inner arrays are flattened one level
+    const result = sanitize({ a: [5, [6, 7]] } as any, { mergeStrategy: "combine" });
+    expect(result.a).toEqual([5, 6, 7]);
+  });
+
+  test("output identity: empty inner arrays contribute no elements", () => {
+    const result = sanitize({ a: [[], [1], []] } as any, { mergeStrategy: "combine" });
+    expect(result.a).toEqual([1]);
+  });
+
+  test("stack-safety: large nested array under raised maxArrayLength does not throw", () => {
+    // Reproduces the RangeError that acc.push(...v) triggered when v was a 200k-element
+    // array: spreading >125k arguments overflows V8's call-stack argument ceiling.
+    // The iterative flatten has no call-stack bound and handles any array size.
+    const big = Array.from({ length: 200000 }, (_, i) => i);
+    const run = () =>
+      sanitize({ a: [big] } as any, { mergeStrategy: "combine", maxArrayLength: 200000 });
+    expect(run).not.toThrow();
+    const result = run();
+    expect(Array.isArray(result.a)).toBe(true);
+    expect((result.a as number[]).length).toBe(200000);
   });
 });

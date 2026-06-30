@@ -261,3 +261,78 @@ describe("hppx - nested and strategies", () => {
     expect(events).toEqual([{ source: "query", pollutedKeys: ["query.x"] }]);
   });
 });
+
+// ─── Phase 2 / C1: req.params end-to-end coverage ───────────────────────────
+// Express never produces duplicate route params naturally (each :param captures
+// exactly one segment). Tests inject them via a route-level pre-middleware that
+// sets req.params before hppx runs, exercising the shared detection loop at
+// src/index.ts:846-931 for the "params" source.
+describe("hppx - req.params end-to-end (C1)", () => {
+  // T2.1 — pins current intended behavior: params source reduces duplicate
+  // array values and exposes req.paramsPolluted.
+  it("T2.1: reduces polluted req.params to keepLast and populates req.paramsPolluted", async () => {
+    const app = express();
+    app.get(
+      "/item",
+      (req: any, _res: any, next: any) => {
+        // Inject duplicate params — Express would never produce these naturally
+        req.params = { id: ["1", "2"], name: "ok" };
+        next();
+      },
+      hppx({ sources: ["params"], logPollution: false }),
+      (req: any, res: any) => {
+        res.json({ params: req.params, paramsPolluted: req.paramsPolluted });
+      },
+    );
+    const res = await request(app).get("/item");
+    expect(res.status).toBe(200);
+    // keepLast (default): last element "2" wins; non-duplicate key passes through
+    expect(res.body.params).toEqual({ id: "2", name: "ok" });
+    // polluted tree retains the full original array for sidechannel auditing
+    expect(res.body.paramsPolluted).toEqual({ id: ["1", "2"] });
+  });
+
+  // T2.2 — pins current intended behavior: the params source drives
+  // onPollutionDetected and strict mode identically to query/body.
+  it('T2.2a: params source fires onPollutionDetected with source:"params" and fully-qualified key', async () => {
+    const events: { source: string; pollutedKeys: string[] }[] = [];
+    const app = express();
+    app.get(
+      "/item",
+      (req: any, _res: any, next: any) => {
+        req.params = { id: ["1", "2"], name: "ok" };
+        next();
+      },
+      hppx({
+        sources: ["params"],
+        logPollution: false,
+        onPollutionDetected: (_req, info) => {
+          events.push({ source: info.source, pollutedKeys: info.pollutedKeys });
+        },
+      }),
+      (_req: any, res: any) => res.json({}),
+    );
+    await request(app).get("/item");
+    // src/index.ts:957-963: callback fires once per polluted source; the
+    // fully-qualified key is "<source>.<key>", so "params.id" here
+    expect(events).toEqual([{ source: "params", pollutedKeys: ["params.id"] }]);
+  });
+
+  it('T2.2b: params source triggers strict-mode 400 with pollutedParameters including "params.id"', async () => {
+    const app = express();
+    app.get(
+      "/item",
+      (req: any, _res: any, next: any) => {
+        req.params = { id: ["1", "2"], name: "ok" };
+        next();
+      },
+      hppx({ sources: ["params"], strict: true, logPollution: false }),
+      (_req: any, res: any) => res.json({ ok: true }),
+    );
+    const res = await request(app).get("/item");
+    // src/index.ts:971-978: strict mode short-circuits with 400 before next()
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("HPP_DETECTED");
+    expect(res.body.pollutedParameters).toEqual(["params.id"]);
+  });
+});

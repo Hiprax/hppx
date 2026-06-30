@@ -11,7 +11,7 @@
 //   - Creates an annotated tag vX.Y.Z
 //   - Pushes the tag - this triggers the release workflow on CI
 //
-// CHANGELOG convention used in this repo: `## vX.Y.Z - Title (YYYY-MM-DD)`
+// CHANGELOG convention used in this repo: `## vX.Y.Z — Title (YYYY-MM-DD)`
 
 import {
   run,

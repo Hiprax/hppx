@@ -19,11 +19,11 @@
 - **Multiple merge strategies** — `keepFirst`, `keepLast` (default), `combine`
 - **Enhanced security:**
   - Blocks dangerous keys: `__proto__`, `prototype`, `constructor`
-  - Prevents null-byte injection in keys
+  - Rejects control, bidirectional-override, and BOM characters in keys (null byte included)
   - Rejects malformed keys (dot/bracket-only patterns)
   - Validates key lengths to prevent DoS attacks
   - Limits array sizes to prevent memory exhaustion
-- **Flexible whitelisting** — nested whitelist with dot-notation and leaf matching
+- **Flexible whitelisting** — nested whitelist with dot-notation, leaf, and prefix/subtree matching
 - **Pollution tracking** — records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
 - **Multi-middleware support** — works with multiple middlewares on different routes (whitelists applied incrementally)
 - **DoS protection** — `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
@@ -131,10 +131,10 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 
 **Whitelist & Strategy:**
 
-| Option          | Type                                     | Default      | Description                                                                                                                                                                     |
-| --------------- | ---------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `whitelist`     | `string[] \| string`                     | `[]`         | Keys allowed to remain as arrays. Supports dot-notation (`"user.tags"`) and leaf matching (`"tags"` matches any path ending in `tags`).                                         |
-| `mergeStrategy` | `'keepFirst' \| 'keepLast' \| 'combine'` | `'keepLast'` | How to reduce duplicate/array parameters when not whitelisted. `keepFirst` takes the first value, `keepLast` takes the last, `combine` flattens all values into a single array. |
+| Option          | Type                                     | Default      | Description                                                                                                                                                                                                                        |
+| --------------- | ---------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `whitelist`     | `string[] \| string`                     | `[]`         | Keys allowed to remain as arrays. Supports exact dot-notation (`"user.tags"`), leaf matching (`"tags"` matches any path ending in `tags`), and prefix/subtree matching (`"user"` whitelists every key under the `user.*` subtree). |
+| `mergeStrategy` | `'keepFirst' \| 'keepLast' \| 'combine'` | `'keepLast'` | How to reduce duplicate/array parameters when not whitelisted. `keepFirst` takes the first value, `keepLast` takes the last, `combine` flattens all values into a single array.                                                    |
 
 **Source Selection:**
 
@@ -152,6 +152,8 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 | `maxKeys`        | `number` | `5000`  | >= 1     | Maximum number of keys to process. Exceeding this throws an error passed to `next()`. |
 | `maxArrayLength` | `number` | `1000`  | >= 1     | Maximum array length. Arrays are truncated before processing.                         |
 | `maxKeyLength`   | `number` | `200`   | 1 - 1000 | Maximum key string length. Longer keys are silently dropped.                          |
+
+> **Note — in-order, in-place commit model:** Sources are processed in the order specified by the `sources` array and each source's sanitized result is committed in-place to `req` before the next source begins. When `maxDepth` or `maxKeys` is exceeded, the error is forwarded to `next()` immediately — but **any earlier sources that already completed are already sanitized on `req`** while the throwing source stays raw. Error handlers should not assume an atomic all-or-nothing transform across sources.
 
 **Behavior & Callbacks:**
 
@@ -480,6 +482,39 @@ arrays reduced. It does **not** return `{cleaned, pollutedTree, pollutedKeys}`
 `req.queryPolluted` / `req.bodyPolluted` / `req.paramsPolluted`. Middleware-only
 options (`sources`, `excludePaths`, `strict`, callbacks, etc.) are silently
 ignored when passed to `sanitize()`.
+
+**6. `whitelist` is a data-preservation control; `strict` / `logPollution` are wire-level detection signals.**
+
+These two concerns are deliberately independent:
+
+- **`whitelist`** controls what happens _after_ reduction. Whitelisted keys have their raw
+  arrays moved back from the polluted tree into `req.query` (etc.) and are pruned from
+  `req.queryPolluted`. The route handler sees the original multi-value array for whitelisted
+  keys — they are not further reduced.
+- **`strict`** and **`logPollution`** are driven by pre-restoration data — the `pollutedKeys`
+  set returned by `detectAndReduce` captures every parameter that arrived duplicated on the
+  wire, regardless of whitelist configuration. Because `anyPollutionDetected` is set from
+  that pre-restoration snapshot, a whitelisted key that arrives duplicated on the wire still
+  causes `strict: true` to return HTTP 400 and `logPollution: true` to emit a warning.
+
+If you need certain keys to carry multiple values without triggering strict mode, do not use
+`strict: true` in combination with `whitelist` for those keys — or handle those keys in a
+separate, non-strict middleware.
+
+**7. `onPollutionDetected` and `req.*Polluted` reflect the post-restoration state.**
+
+After `detectAndReduce` collects all duplicated keys, `moveWhitelistedFromPolluted` restores
+whitelisted entries back into `req.query` (etc.) and prunes them from `req.queryPolluted`.
+Two consequences:
+
+- `req.queryPolluted` (and `req.bodyPolluted`, `req.paramsPolluted`) never contains whitelisted
+  keys — they have already been moved back to the main request object.
+- `onPollutionDetected` is invoked only when `req.queryPolluted` is **non-empty** after
+  restoration. If _all_ polluted keys are whitelisted, the polluted tree is `{}` after
+  restoration and the callback is **not** called (even though `logPollution` still fires for
+  the wire-level signal). If _some_ (but not all) keys are whitelisted, the callback fires for
+  that source — and its `info.pollutedKeys` array contains **all** pre-restoration polluted
+  keys (both whitelisted and non-whitelisted ones).
 
 ---
 

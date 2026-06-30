@@ -5,29 +5,54 @@ import hppx, { sanitize } from "../src/index";
 describe("hppx - Security Features", () => {
   describe("Array length limits (DoS protection)", () => {
     test("limits array length to prevent memory exhaustion", () => {
+      // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
+      // keepLast selects values[99] = 99. Pins truncation depth (safeDeepClone's
+      // maxArrayLength slice) and the mergeValues keepLast path — current intended behavior.
       const largeArray = Array.from({ length: 2000 }, (_, i) => i);
       const input = { x: largeArray };
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "keepLast" });
-      // Should have been truncated during processing
-      expect(cleaned.x).toBeDefined();
+      expect(cleaned.x).toBe(99);
     });
 
     test("respects custom maxArrayLength", () => {
-      const arr = [1, 2, 3, 4, 5];
+      // Distinct elements; slice(0,3) -> [10,20,30]; keepLast selects 30 — pins behavior.
+      const arr = [10, 20, 30, 40, 50];
       const input = { x: arr };
       const cleaned = sanitize(input, { maxArrayLength: 3, mergeStrategy: "keepLast" });
-      expect(cleaned.x).toBeDefined();
+      expect(cleaned.x).toBe(30);
+    });
+
+    test("maxArrayLength with combine strategy truncates then flattens — pins current behavior", () => {
+      // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
+      // combine pushes each scalar into one array -> length 100, last element 99.
+      // Pins truncation (safeDeepClone's maxArrayLength slice) and the mergeValues combine path.
+      const largeArray = Array.from({ length: 2000 }, (_, i) => i);
+      const input = { x: largeArray };
+      const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "combine" });
+      expect(Array.isArray(cleaned.x)).toBe(true);
+      expect((cleaned.x as unknown[]).length).toBe(100);
+      expect((cleaned.x as unknown[])[99]).toBe(99);
     });
 
     test("handles very large arrays in middleware", async () => {
       const app = express();
       app.use(express.json());
-      app.use(hppx({ maxArrayLength: 10, checkBodyContentType: "any", logPollution: false }));
+      app.use(
+        hppx({
+          maxArrayLength: 10,
+          mergeStrategy: "combine",
+          checkBodyContentType: "any",
+          logPollution: false,
+        }),
+      );
       app.post("/test", (req, res) => res.json({ body: req.body }));
 
+      // 100-element input; safeDeepClone slices to 10; combine collects 10 scalars.
       const largeArray = Array.from({ length: 100 }, (_, i) => i);
       const res = await request(app).post("/test").send({ x: largeArray });
       expect(res.status).toBe(200);
+      // Pins truncation to maxArrayLength (10) via combine — current intended behavior.
+      expect(res.body.body.x).toHaveLength(10);
     });
   });
 
@@ -456,6 +481,80 @@ describe("hppx - Security Features", () => {
     });
   });
 
+  describe("onPollutionDetected callback throw is swallowed", () => {
+    // These tests exercise the try/catch at src/index.ts:959-978 that silently
+    // discards user-callback errors so they cannot disrupt request processing.
+
+    test("non-strict: throwing callback contained; next() called without error; req.queryPolluted populated", () => {
+      const mw = hppx({
+        onPollutionDetected: () => {
+          throw new Error("boom");
+        },
+        logPollution: false,
+      });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const res: any = {};
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // The callback's throw is contained inside the catch block; next() must be
+      // called exactly once with no argument.
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledWith();
+      // req.queryPolluted is still populated even though the callback threw.
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+
+    test("strict + throwing callback: throw contained; 400 HPP_DETECTED still returned; next not called", () => {
+      // The onPollutionDetected try/catch (src/index.ts:959-978) runs BEFORE the
+      // strict block (src/index.ts:980-987), so a contained throw cannot suppress
+      // the strict 400 response.
+      const mw = hppx({
+        strict: true,
+        onPollutionDetected: () => {
+          throw new Error("boom");
+        },
+        logPollution: false,
+      });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const jsonMock = jest.fn();
+      const res: any = { status: jest.fn().mockReturnValue({ json: jsonMock }) };
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // Strict block fired after the catch: 400 with HPP_DETECTED code.
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ code: "HPP_DETECTED" }));
+      // next() must not be called when strict mode sends the 400 response.
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("strict mode degrades gracefully when res.status is not a function", () => {
+    // Exercises the third operand of the compound condition at src/index.ts:980:
+    // `strict && res && typeof res.status === "function"`. When res.status is
+    // absent (non-Express harness), the condition short-circuits to false and
+    // the middleware falls through to next() rather than throwing a TypeError.
+
+    test("strict: next() called without error when res has no status method", () => {
+      const mw = hppx({ strict: true, logPollution: false });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const res: any = {}; // no status method — typeof res.status === "undefined"
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // The strict guard silently skips the 400 response; next() is called normally.
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledWith();
+      // Sanitization still ran: keepLast reduces the array.
+      expect(req.query).toEqual({ x: "2" });
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+  });
+
   describe("Circular reference protection", () => {
     test("handles circular references in sanitize without stack overflow", () => {
       const obj: any = { a: "value" };
@@ -679,6 +778,105 @@ describe("hppx - Security Features", () => {
 
       // Flag was set (descriptor exists) and is NOT enumerable.
       expect(processedKeyEnumerable).toBe(false);
+    });
+  });
+
+  describe("Non-enumerable *Polluted properties", () => {
+    function invokeDirectly(mw: ReturnType<typeof hppx>, reqOverrides: Record<string, unknown>) {
+      const req: any = { headers: {}, ...reqOverrides };
+      const res: any = {};
+      const next = jest.fn();
+      mw(req, res, next);
+      return { req, next };
+    }
+
+    test("queryPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "queryPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("queryPolluted is readable by name and holds the raw duplicate tree", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+
+    test("bodyPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false, checkBodyContentType: "any" });
+      const { req } = invokeDirectly(mw, { body: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "bodyPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("paramsPolluted descriptor has enumerable: false after processing", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { params: { id: ["a", "b"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "paramsPolluted");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(false);
+    });
+
+    test("queryPolluted absent from JSON.stringify(req) and Object.keys(req)", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const serialized = JSON.stringify(req);
+      // Non-enumerable own properties are excluded from JSON serialization
+      expect(serialized).not.toContain("queryPolluted");
+      // Object.keys only returns own enumerable keys
+      expect(Object.keys(req)).not.toContain("queryPolluted");
+      // The reduced-away raw values should also not be serialized
+      expect(serialized).not.toContain('"1","2"');
+    });
+
+    test("cleaned query source remains enumerable and present in JSON.stringify(req)", () => {
+      const mw = hppx({ logPollution: false });
+      const { req } = invokeDirectly(mw, { query: { x: ["1", "2"] } });
+
+      const desc = Object.getOwnPropertyDescriptor(req, "query");
+      expect(desc).toBeDefined();
+      expect(desc!.enumerable).toBe(true);
+      expect(Object.keys(req)).toContain("query");
+      expect(JSON.stringify(req)).toContain('"query"');
+    });
+
+    test("multi-middleware: second instance whitelist restoration works; queryPolluted stays non-enumerable", () => {
+      // First middleware: no whitelist — reduces both x and y
+      const mw1 = hppx({ logPollution: false });
+      // Second middleware: whitelist x — restores x from polluted tree
+      const mw2 = hppx({ logPollution: false, whitelist: ["x"] });
+
+      const req: any = {
+        headers: {},
+        query: { x: ["1", "2"], y: ["3", "4"] },
+      };
+      const res: any = {};
+
+      mw1(req, res, jest.fn());
+
+      // After first pass: both reduced, queryPolluted is non-enumerable
+      expect(req.query.x).toBe("2");
+      expect(req.query.y).toBe("4");
+      expect(Object.getOwnPropertyDescriptor(req, "queryPolluted")!.enumerable).toBe(false);
+
+      mw2(req, res, jest.fn());
+
+      // After second pass (whitelist restoration only): x is restored as raw array
+      expect(req.query.x).toEqual(["1", "2"]);
+      // y is still the reduced scalar (not whitelisted)
+      expect(req.query.y).toBe("4");
+      // queryPolluted is still non-enumerable after in-place mutation by mw2
+      expect(Object.getOwnPropertyDescriptor(req, "queryPolluted")!.enumerable).toBe(false);
+      // And still absent from serialization
+      expect(Object.keys(req)).not.toContain("queryPolluted");
     });
   });
 

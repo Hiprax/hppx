@@ -244,6 +244,7 @@ function setReqPropertySafe(
   key: string,
   value: unknown,
   onFailure?: (message: string) => void,
+  enumerable = true,
 ): boolean {
   try {
     const desc = Object.getOwnPropertyDescriptor(target, key);
@@ -252,7 +253,7 @@ function setReqPropertySafe(
         value,
         writable: true,
         configurable: true,
-        enumerable: true,
+        enumerable,
       });
       return true;
     }
@@ -365,12 +366,17 @@ function mergeValues(values: unknown[], strategy: MergeStrategy): unknown {
       return values[0];
     case "keepLast":
       return values[values.length - 1];
-    case "combine":
-      return values.reduce<unknown[]>((acc, v) => {
-        if (Array.isArray(v)) acc.push(...v);
-        else acc.push(v);
-        return acc;
-      }, []);
+    case "combine": {
+      const out: unknown[] = [];
+      for (const v of values) {
+        if (Array.isArray(v)) {
+          for (const el of v) out.push(el);
+        } else {
+          out.push(v);
+        }
+      }
+      return out;
+    }
     /* istanbul ignore next -- exhaustiveness check unreachable from outside:
        validateSanitizeOptions rejects every non-listed strategy at construction
        time, so the only way to reach this branch is a programmer error (a new
@@ -561,7 +567,7 @@ function detectAndReduce(
   //
   // No nested safeDeepClone is performed here — it would be redundant work
   // and, if invoked with a fresh WeakSet, could re-introduce traversal of
-  // cycles that the upfront clone already broke. (See Finding 24 in FIX.md.)
+  // cycles that the upfront clone already broke.
   const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth);
 
   function processNode(node: unknown, path: string[] = [], depth = 0, inArray = false): unknown {
@@ -888,7 +894,10 @@ export default function hppx(options: HppxOptions = {}) {
           setReqPropertySafe(req, source, cleaned, warn);
 
           // Attach polluted object (always present as {} when source processed)
-          setReqPropertySafe(req, pollutedKey, pollutedTree, warn);
+          // Non-enumerable: keeps attacker-controlled duplicate payload out of
+          // generic req serializations (JSON.stringify, spreads, audit middleware)
+          // while remaining readable by name — consistent with __hppxProcessed_*.
+          setReqPropertySafe(req, pollutedKey, pollutedTree, warn, false);
           // Mark as processed in a tamper-resistant, non-enumerable way so it is not
           // visible to user code, response serializers, or attackers.
           try {
