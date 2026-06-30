@@ -122,13 +122,15 @@ describe("hppx - Performance Optimizations", () => {
     });
 
     test("array length limits prevent memory exhaustion", () => {
+      // Distinct elements 0..9999; safeDeepClone slices to 100 (indices 0..99).
+      // keepLast selects values[99] = 99. Pins truncation (src/index.ts:325-326)
+      // and keepLast path (src/index.ts:364-365) — current intended behavior.
       const hugeArray = Array.from({ length: 10000 }, (_, i) => i);
       const input = { data: hugeArray };
 
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "keepLast" });
 
-      // Should complete without running out of memory
-      expect(cleaned).toBeDefined();
+      expect(cleaned.data).toBe(99);
     });
   });
 

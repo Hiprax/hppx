@@ -250,3 +250,59 @@ describe("scalar–dotted key collision — current intended behavior (C3)", () 
     expect(result).toEqual({ a: 1 });
   });
 });
+
+describe("combine + whitelist interaction — current intended behavior (C4)", () => {
+  // Pins: detectAndReduce stores the original (pre-combine) cloned array in the polluted tree
+  // (src/index.ts:592), then mergeValues flattens it for the cleaned output. Afterwards,
+  // moveWhitelistedFromPolluted restores the raw polluted-tree entry into cleaned for whitelisted
+  // keys (src/index.ts:487-516). This means whitelisted keys preserve the un-flattened array —
+  // the data-preservation contract documented in the README as "Keys allowed to remain as arrays".
+  // Do NOT alter this two-pass flow (detectAndReduce → moveWhitelistedFromPolluted).
+
+  test("combine + whitelist: whitelisted key restored as raw un-flattened array — pins current behavior", () => {
+    // x = [["1"],["2"]]: combine would flatten to ["1","2"], but whitelist ["x"] causes
+    // moveWhitelistedFromPolluted to restore the polluted-tree entry [["1"],["2"]] (the
+    // original cloned nested array) back into cleaned, overwriting the combined output.
+    const result = sanitize({ x: [["1"], ["2"]] } as any, {
+      mergeStrategy: "combine",
+      whitelist: ["x"],
+    });
+    expect(result.x).toEqual([["1"], ["2"]]);
+  });
+
+  test("combine + whitelist: non-whitelisted key still gets combine-flattened output — pins current behavior", () => {
+    // x (whitelisted) is restored as the raw nested array; y (not whitelisted) remains as the
+    // combine-flattened output ["a","b"] — demonstrating both behaviors in one call.
+    const result = sanitize({ x: [["1"], ["2"]], y: [["a"], ["b"]] } as any, {
+      mergeStrategy: "combine",
+      whitelist: ["x"],
+    });
+    expect(result.x).toEqual([["1"], ["2"]]); // whitelisted: raw un-flattened restored
+    expect(result.y).toEqual(["a", "b"]); // non-whitelisted: combine-flattened
+  });
+
+  test("combine + whitelist middleware: req.queryPolluted pruned empty for whitelisted key — pins current behavior", async () => {
+    // Pins: after moveWhitelistedFromPolluted restores x from polluted tree, pollutedTree.x is
+    // deleted (src/index.ts:511), so req.queryPolluted becomes {} even though pollution was
+    // detected. The query value is preserved as the raw array from the polluted tree.
+    const app = express();
+    app.use(
+      hppx({
+        sources: ["query"],
+        mergeStrategy: "combine",
+        whitelist: ["x"],
+        logPollution: false,
+      }),
+    );
+    app.get("/test", (req, res) =>
+      res.json({ query: req.query, queryPolluted: req.queryPolluted }),
+    );
+    const res = await request(app).get("/test?x=1&x=2");
+    expect(res.status).toBe(200);
+    // x restored from polluted tree (raw array ["1","2"] — combine output equals polluted entry
+    // for flat-string query params, but the restoration path is the same).
+    expect(res.body.query.x).toEqual(["1", "2"]);
+    // Polluted tree pruned of x after whitelist restoration — current intended behavior.
+    expect(res.body.queryPolluted).toEqual({});
+  });
+});

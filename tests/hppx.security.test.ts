@@ -5,29 +5,54 @@ import hppx, { sanitize } from "../src/index";
 describe("hppx - Security Features", () => {
   describe("Array length limits (DoS protection)", () => {
     test("limits array length to prevent memory exhaustion", () => {
+      // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
+      // keepLast selects values[99] = 99. Pins truncation depth (src/index.ts:325-326)
+      // and mergeValues keepLast path (src/index.ts:364-365) — current intended behavior.
       const largeArray = Array.from({ length: 2000 }, (_, i) => i);
       const input = { x: largeArray };
       const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "keepLast" });
-      // Should have been truncated during processing
-      expect(cleaned.x).toBeDefined();
+      expect(cleaned.x).toBe(99);
     });
 
     test("respects custom maxArrayLength", () => {
-      const arr = [1, 2, 3, 4, 5];
+      // Distinct elements; slice(0,3) -> [10,20,30]; keepLast selects 30 — pins behavior.
+      const arr = [10, 20, 30, 40, 50];
       const input = { x: arr };
       const cleaned = sanitize(input, { maxArrayLength: 3, mergeStrategy: "keepLast" });
-      expect(cleaned.x).toBeDefined();
+      expect(cleaned.x).toBe(30);
+    });
+
+    test("maxArrayLength with combine strategy truncates then flattens — pins current behavior", () => {
+      // Distinct elements 0..1999; safeDeepClone slices to 100 (indices 0..99).
+      // combine pushes each scalar into one array -> length 100, last element 99.
+      // Pins truncation (src/index.ts:325-326) and mergeValues combine path (src/index.ts:368-373).
+      const largeArray = Array.from({ length: 2000 }, (_, i) => i);
+      const input = { x: largeArray };
+      const cleaned = sanitize(input, { maxArrayLength: 100, mergeStrategy: "combine" });
+      expect(Array.isArray(cleaned.x)).toBe(true);
+      expect((cleaned.x as unknown[]).length).toBe(100);
+      expect((cleaned.x as unknown[])[99]).toBe(99);
     });
 
     test("handles very large arrays in middleware", async () => {
       const app = express();
       app.use(express.json());
-      app.use(hppx({ maxArrayLength: 10, checkBodyContentType: "any", logPollution: false }));
+      app.use(
+        hppx({
+          maxArrayLength: 10,
+          mergeStrategy: "combine",
+          checkBodyContentType: "any",
+          logPollution: false,
+        }),
+      );
       app.post("/test", (req, res) => res.json({ body: req.body }));
 
+      // 100-element input; safeDeepClone slices to 10; combine collects 10 scalars.
       const largeArray = Array.from({ length: 100 }, (_, i) => i);
       const res = await request(app).post("/test").send({ x: largeArray });
       expect(res.status).toBe(200);
+      // Pins truncation to maxArrayLength (10) via combine — current intended behavior.
+      expect(res.body.body.x).toHaveLength(10);
     });
   });
 
