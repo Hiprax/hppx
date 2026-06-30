@@ -355,3 +355,45 @@ describe("combine + whitelist interaction — current intended behavior (C4)", (
     expect(res.body.queryPolluted).toEqual({});
   });
 });
+
+describe("combine merge — stack-safety and output identity", () => {
+  // Pins: mergeValues combine branch uses an iterative flatten (no call-stack bound).
+  // Output must be byte-identical to the previous spread-based reduce.
+
+  test("output identity: nested integer arrays flatten correctly", () => {
+    const result = sanitize(
+      {
+        a: [
+          [1, 2],
+          [3, 4],
+        ],
+      } as any,
+      { mergeStrategy: "combine" },
+    );
+    expect(result.a).toEqual([1, 2, 3, 4]);
+  });
+
+  test("output identity: scalar + array mix flattens in order", () => {
+    // a = [5, [6, 7]]: scalars are kept in-place; inner arrays are flattened one level
+    const result = sanitize({ a: [5, [6, 7]] } as any, { mergeStrategy: "combine" });
+    expect(result.a).toEqual([5, 6, 7]);
+  });
+
+  test("output identity: empty inner arrays contribute no elements", () => {
+    const result = sanitize({ a: [[], [1], []] } as any, { mergeStrategy: "combine" });
+    expect(result.a).toEqual([1]);
+  });
+
+  test("stack-safety: large nested array under raised maxArrayLength does not throw", () => {
+    // Reproduces the RangeError that acc.push(...v) triggered when v was a 200k-element
+    // array: spreading >125k arguments overflows V8's call-stack argument ceiling.
+    // The iterative flatten has no call-stack bound and handles any array size.
+    const big = Array.from({ length: 200000 }, (_, i) => i);
+    const run = () =>
+      sanitize({ a: [big] } as any, { mergeStrategy: "combine", maxArrayLength: 200000 });
+    expect(run).not.toThrow();
+    const result = run();
+    expect(Array.isArray(result.a)).toBe(true);
+    expect((result.a as number[]).length).toBe(200000);
+  });
+});

@@ -366,12 +366,17 @@ function mergeValues(values: unknown[], strategy: MergeStrategy): unknown {
       return values[0];
     case "keepLast":
       return values[values.length - 1];
-    case "combine":
-      return values.reduce<unknown[]>((acc, v) => {
-        if (Array.isArray(v)) acc.push(...v);
-        else acc.push(v);
-        return acc;
-      }, []);
+    case "combine": {
+      const out: unknown[] = [];
+      for (const v of values) {
+        if (Array.isArray(v)) {
+          for (const el of v) out.push(el);
+        } else {
+          out.push(v);
+        }
+      }
+      return out;
+    }
     /* istanbul ignore next -- exhaustiveness check unreachable from outside:
        validateSanitizeOptions rejects every non-listed strategy at construction
        time, so the only way to reach this branch is a programmer error (a new
