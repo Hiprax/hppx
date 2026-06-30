@@ -481,6 +481,80 @@ describe("hppx - Security Features", () => {
     });
   });
 
+  describe("onPollutionDetected callback throw is swallowed", () => {
+    // These tests exercise the try/catch at src/index.ts:959-978 that silently
+    // discards user-callback errors so they cannot disrupt request processing.
+
+    test("non-strict: throwing callback contained; next() called without error; req.queryPolluted populated", () => {
+      const mw = hppx({
+        onPollutionDetected: () => {
+          throw new Error("boom");
+        },
+        logPollution: false,
+      });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const res: any = {};
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // The callback's throw is contained inside the catch block; next() must be
+      // called exactly once with no argument.
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledWith();
+      // req.queryPolluted is still populated even though the callback threw.
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+
+    test("strict + throwing callback: throw contained; 400 HPP_DETECTED still returned; next not called", () => {
+      // The onPollutionDetected try/catch (src/index.ts:959-978) runs BEFORE the
+      // strict block (src/index.ts:980-987), so a contained throw cannot suppress
+      // the strict 400 response.
+      const mw = hppx({
+        strict: true,
+        onPollutionDetected: () => {
+          throw new Error("boom");
+        },
+        logPollution: false,
+      });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const jsonMock = jest.fn();
+      const res: any = { status: jest.fn().mockReturnValue({ json: jsonMock }) };
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // Strict block fired after the catch: 400 with HPP_DETECTED code.
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ code: "HPP_DETECTED" }));
+      // next() must not be called when strict mode sends the 400 response.
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("strict mode degrades gracefully when res.status is not a function", () => {
+    // Exercises the third operand of the compound condition at src/index.ts:980:
+    // `strict && res && typeof res.status === "function"`. When res.status is
+    // absent (non-Express harness), the condition short-circuits to false and
+    // the middleware falls through to next() rather than throwing a TypeError.
+
+    test("strict: next() called without error when res has no status method", () => {
+      const mw = hppx({ strict: true, logPollution: false });
+      const req: any = { query: { x: ["1", "2"] }, headers: {} };
+      const res: any = {}; // no status method — typeof res.status === "undefined"
+      const next = jest.fn();
+
+      mw(req, res, next);
+
+      // The strict guard silently skips the 400 response; next() is called normally.
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledWith();
+      // Sanitization still ran: keepLast reduces the array.
+      expect(req.query).toEqual({ x: "2" });
+      expect(req.queryPolluted).toEqual({ x: ["1", "2"] });
+    });
+  });
+
   describe("Circular reference protection", () => {
     test("handles circular references in sanitize without stack overflow", () => {
       const obj: any = { a: "value" };
