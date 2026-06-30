@@ -23,7 +23,7 @@
   - Rejects malformed keys (dot/bracket-only patterns)
   - Validates key lengths to prevent DoS attacks
   - Limits array sizes to prevent memory exhaustion
-- **Flexible whitelisting** — nested whitelist with dot-notation and leaf matching
+- **Flexible whitelisting** — nested whitelist with dot-notation, leaf, and prefix/subtree matching
 - **Pollution tracking** — records polluted parameters on the request (`queryPolluted`, `bodyPolluted`, `paramsPolluted`)
 - **Multi-middleware support** — works with multiple middlewares on different routes (whitelists applied incrementally)
 - **DoS protection** — `maxDepth`, `maxKeys`, `maxArrayLength`, `maxKeyLength`
@@ -131,10 +131,10 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 
 **Whitelist & Strategy:**
 
-| Option          | Type                                     | Default      | Description                                                                                                                                                                     |
-| --------------- | ---------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `whitelist`     | `string[] \| string`                     | `[]`         | Keys allowed to remain as arrays. Supports dot-notation (`"user.tags"`) and leaf matching (`"tags"` matches any path ending in `tags`).                                         |
-| `mergeStrategy` | `'keepFirst' \| 'keepLast' \| 'combine'` | `'keepLast'` | How to reduce duplicate/array parameters when not whitelisted. `keepFirst` takes the first value, `keepLast` takes the last, `combine` flattens all values into a single array. |
+| Option          | Type                                     | Default      | Description                                                                                                                                                                                                                        |
+| --------------- | ---------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `whitelist`     | `string[] \| string`                     | `[]`         | Keys allowed to remain as arrays. Supports exact dot-notation (`"user.tags"`), leaf matching (`"tags"` matches any path ending in `tags`), and prefix/subtree matching (`"user"` whitelists every key under the `user.*` subtree). |
+| `mergeStrategy` | `'keepFirst' \| 'keepLast' \| 'combine'` | `'keepLast'` | How to reduce duplicate/array parameters when not whitelisted. `keepFirst` takes the first value, `keepLast` takes the last, `combine` flattens all values into a single array.                                                    |
 
 **Source Selection:**
 
