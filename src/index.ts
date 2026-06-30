@@ -561,7 +561,7 @@ function detectAndReduce(
   //
   // No nested safeDeepClone is performed here — it would be redundant work
   // and, if invoked with a fresh WeakSet, could re-introduce traversal of
-  // cycles that the upfront clone already broke. (See Finding 24 in FIX.md.)
+  // cycles that the upfront clone already broke.
   const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth);
 
   function processNode(node: unknown, path: string[] = [], depth = 0, inArray = false): unknown {

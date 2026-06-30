@@ -17,7 +17,7 @@
 //   - All quality gates pass
 //
 // CHANGELOG convention used in this repo:
-//   ## vX.Y.Z - <Title> (<YYYY-MM-DD>)
+//   ## vX.Y.Z — <Title> (<YYYY-MM-DD>)
 //
 // If the CHANGELOG already contains a heading for the new version, it is
 // left untouched. Otherwise a placeholder heading is inserted at the top
@@ -132,7 +132,7 @@ main(async () => {
         `Title for the v${newVersion} CHANGELOG entry?`,
         "Release",
       );
-      const placeholder = `## v${newVersion} - ${title} (${date})\n\n_(fill in the changelog body before merging)_\n\n`;
+      const placeholder = `## v${newVersion} — ${title} (${date})\n\n_(fill in the changelog body before merging)_\n\n`;
       const insertAfter = changelog.indexOf("\n", changelog.indexOf("# Changelog"));
       if (insertAfter > -1) {
         const updated =
