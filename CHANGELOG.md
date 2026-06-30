@@ -1,5 +1,99 @@
 # Changelog
 
+## v0.2.8 — Test suite hardening & dependency hygiene (2026-06-30)
+
+No source/API changes; runtime behavior of the published `hppx` package is
+unchanged. This release adds coverage for previously untested but documented
+behaviors, pins characterization tests for boundary conditions, documents
+intentional semantics in the README and CLAUDE.md, corrects a stale code
+comment and a release-script formatting inconsistency, and resolves all
+dev-dependency advisories via `overrides`.
+
+### Added — Tests
+
+New test file `tests/hppx.whitelist-semantics.test.ts` plus additions to
+existing suites:
+
+- **`req.params` end-to-end.** Tests injecting duplicate `req.params` via a
+  pre-middleware, asserting `keepLast` reduction and `req.paramsPolluted`;
+  plus `onPollutionDetected` firing with `source: "params"` and `strict:
+true` returning HTTP 400 with `params.*` keys.
+- **Empty-array inputs.** Pinned behavior for `{x: []}`: `keepFirst` /
+  `keepLast` → `undefined`; `combine` → `[]`; all strategies record the key
+  in `pollutedKeys` and fire `onPollutionDetected`.
+- **Scalar/dotted-key collision.** Pinned the order-dependent
+  `expandObjectPaths` behavior: `{"a":1,"a.b":2}` → `{a:{b:2}}`;
+  reversed → `{a:1}`. Documented as characterization of current behavior,
+  not an endorsed invariant.
+- **`combine` + `whitelist` interaction.** Confirmed the intended
+  data-preservation outcome: a whitelisted key under `combine` has its raw
+  un-flattened array restored (not the `combine`-flattened result);
+  `req.queryPolluted` is pruned empty for that key.
+- **`maxArrayLength` truncation precision.** Replaced weak `toBeDefined()`
+  assertions with exact-value checks: `keepLast` → `cleaned.x === 99`;
+  `combine` → `cleaned.x.length === 100` (after `slice(0, 100)` in
+  `safeDeepClone`).
+- **`strict` + `whitelist` behavior.** Tests confirming `strict: true`
+  returns HTTP 400 for a whitelisted-but-wire-duplicated parameter (wire-
+  level pollution is rejected regardless of whitelist configuration); while a
+  non-strict twin preserves the raw array and prunes `req.queryPolluted` to
+  `{}`.
+- **Three-signal semantics under whitelist.** Pinned: (a) fully whitelisted
+  dup → `logPollution` fires, `onPollutionDetected` does **not** fire,
+  `req.queryPolluted` is `{}`; (b) partial whitelist → callback fires and
+  `info.pollutedKeys` contains **all** pre-restoration keys.
+- **Cross-source partial mutation on limit throw.** Test driving the
+  middleware with a shallow-polluted query source and a body exceeding
+  `maxDepth: 1`; asserts `next` receives an `Error`, `req.query` is the
+  sanitized `{ x: "2" }` (committed in-place before body threw), and
+  `req.body` is still the original raw object.
+
+### Fixed
+
+- **Stale code comment.** Removed the dangling `(See Finding 24 in FIX.md.)`
+  clause from `src/index.ts` — `FIX.md` no longer exists and the inline
+  invariant comment above it fully documents the rationale.
+- **`release-prepare.mjs` em-dash alignment.** The CHANGELOG placeholder
+  heading now uses `—` (U+2014) instead of an ASCII hyphen `-`, matching the
+  project convention `## vX.Y.Z — <Title> (<YYYY-MM-DD>)`.
+
+### Changed — Dependency hygiene
+
+Added an `overrides` block to `package.json` to resolve all 5 dev-dependency
+advisories pinned in `package-lock.json`:
+
+| Package       | Range     | Severity | Notes                                                                         |
+| ------------- | --------- | -------- | ----------------------------------------------------------------------------- |
+| `form-data`   | `^4.0.6`  | high     | —                                                                             |
+| `qs`          | `^6.15.3` | moderate | —                                                                             |
+| `js-yaml`     | `^3.15.0` | moderate | —                                                                             |
+| `@babel/core` | `^7.29.7` | low      | —                                                                             |
+| `esbuild`     | `^0.28.1` | low      | dev-server file-read; not reachable (tsup never starts an esbuild dev server) |
+
+`npm audit` now reports **0 vulnerabilities**. These overrides affect only
+the development environment; the published tarball has zero runtime
+dependencies and is unaffected.
+
+### Documentation
+
+- **README "Known Behaviors"** (entries 6 & 7): `whitelist` as a
+  data-preservation control vs. `strict`/`logPollution` as wire-level
+  detection signals; `onPollutionDetected`/`req.*Polluted` reflecting
+  post-restoration state.
+- **README options table** (`maxDepth`/`maxKeys` rows): in-order, in-place
+  commit model note — earlier sources already sanitized when a later source
+  throws.
+- **`CLAUDE.md`** refreshed: current version, test count, file structure,
+  `__resetPathSegmentCache` export note, and Gotchas from Phases 5–6.
+
+### Verified
+
+- `npm run build` / `typecheck` / `lint` / `format:check` / `check-dts` /
+  `check-types-pack` — all green.
+- `npm test` — 203/203 passing (99.72% stmts, 95.01% branches,
+  100% funcs/lines).
+- `npm audit` — 0 vulnerabilities.
+
 ## v0.2.7 — CodeQL alert cleanup follow-up (2026-05-12)
 
 Repo-hygiene release. No source/API changes; runtime behavior of the
