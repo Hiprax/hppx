@@ -286,22 +286,24 @@ describe("empty-array characterization — current intended behavior (C2)", () =
 
 describe("scalar–dotted key collision — current intended behavior (C3)", () => {
   // Pins: expandObjectPaths processes keys in JavaScript object insertion order.
-  // When a plain key and a dotted key share a path prefix ('a' and 'a.b'),
-  // the LAST-processed key wins by overwriting. This is order-dependent and lossy
-  // by design — hppx is an HTTP pollution guard, not a key-path merger. Do NOT
-  // change expandObjectPaths or setIn to alter this ordering.
+  // When a scalar key and a dotted key share a path prefix ('a' and 'a.b'), the
+  // conflict is structural (exactly one side is a plain object) and the
+  // LAST-processed key wins by overwriting. Same-leaf duplicates ('a' and 'a[]',
+  // 'a.b' and 'a[b]') are different: they are combined and detected as pollution,
+  // see tests/hppx.key-collision.test.ts. Do NOT change expandObjectPaths or its
+  // write helpers to alter this structural ordering.
 
   test("collision {a:1,'a.b':2} -> {a:{b:2}}: dotted key wins when processed last — pins current behavior", () => {
-    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and setIn
-    // overwrites result.a (scalar 1) with {b:2} because setIn replaces any
-    // non-plain-object at an intermediate path segment with a fresh {}.
+    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and
+    // setInExpanded overwrites result.a (scalar 1) with {b:2} because it replaces
+    // any non-plain-object at an intermediate path segment with a fresh {}.
     const result = sanitize({ a: 1, "a.b": 2 } as any);
     expect(result).toEqual({ a: { b: 2 } });
   });
 
   test("collision reversed {'a.b':2,a:1} -> {a:1}: plain key wins when processed last — pins current behavior", () => {
-    // 'a' is processed after 'a.b' expansion; plain assignment overwrites the nested
-    // object {b:2} with the scalar 1 because plain (non-dotted) keys bypass setIn.
+    // 'a' is processed after 'a.b' expansion; assignExpanded overwrites the nested
+    // object {b:2} with the scalar 1 because exactly one side is a plain object.
     const result = sanitize({ "a.b": 2, a: 1 } as any);
     expect(result).toEqual({ a: 1 });
   });
