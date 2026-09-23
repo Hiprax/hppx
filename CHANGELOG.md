@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Refreshed dev dependencies within their existing ranges (`npm audit fix`, `npm update`),
+  clearing every `npm audit` advisory (7 dev-only: `baseline-browser-mapping`, `body-parser`,
+  `brace-expansion`, `browserslist`, `fflate`, `js-yaml`, `qs`) and every install
+  deprecation (`glob@7`, `glob@10`, `inflight`). A nested `overrides` entry
+  (`"test-exclude": { "glob": "^13.0.6" }`) moves `test-exclude@7` onto the maintained
+  `glob` line. No runtime impact: the package has zero runtime dependencies.
+- Added an explicit `allowScripts` policy to `package.json` that denies the install scripts of
+  `@parcel/watcher`, `esbuild` and `unrs-resolver`. The prebuilt platform packages are installed
+  as optional dependencies, so these scripts only act as fallbacks when one is missing (esbuild's
+  also swaps its JS launcher for the native binary, a minor startup optimization). `npm ci` on
+  npm 11 now runs with zero warnings; npm 10 ignores the field.
+
 ## v0.2.9 — Polluted-tree hardening, combine stack-safety & coverage (2026-06-30)
 
 Security hardening, two bug fixes, expanded test coverage, tooling repair, and
