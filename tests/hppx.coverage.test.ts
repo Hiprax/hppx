@@ -489,6 +489,55 @@ describe("hppx - Coverage for Edge Cases", () => {
     });
   });
 
+  describe("whitelist restoration cannot be turned into a prototype-pollution gadget", () => {
+    // Key expansion drops dangerous segments before the polluted tree is built,
+    // so a dangerous path reaches restoration only through a polluted tree that
+    // hppx did not build itself, for example one modified between two stacked
+    // instances. The subsequent instance still walks that tree with its
+    // whitelist, and every write must stay guarded.
+    function stackedApp(tamper: (polluted: Record<string, unknown>) => void) {
+      const app = express();
+      app.set("query parser", "simple");
+      app.use(hppx({ logPollution: false }));
+      app.use((req: any, _res, next) => {
+        tamper(req.queryPolluted);
+        next();
+      });
+      app.use(hppx({ logPollution: false, whitelist: ["a"] }));
+      app.get("/t", (req: any, res) => {
+        res.json({
+          query: req.query,
+          aProtoIsObjectPrototype: Object.getPrototypeOf(req.query.a) === Object.prototype,
+        });
+      });
+      return app;
+    }
+
+    test("a __proto__ intermediate segment never reaches Object.prototype", async () => {
+      try {
+        const app = stackedApp((polluted) => {
+          polluted["a.__proto__.polluted"] = ["x", "y"];
+        });
+        const res = await request(app).get("/t?a.b=1");
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ query: { a: { b: "1" } }, aProtoIsObjectPrototype: true });
+        expect(({} as any).polluted).toBeUndefined();
+        expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
+      } finally {
+        delete (Object.prototype as Record<string, unknown>).polluted;
+      }
+    });
+
+    test("a __proto__ last segment never replaces the prototype of a restored object", async () => {
+      const app = stackedApp((polluted) => {
+        polluted["a.__proto__"] = ["x"];
+      });
+      const res = await request(app).get("/t?a.b=1");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ query: { a: { b: "1" } }, aProtoIsObjectPrototype: true });
+    });
+  });
+
   describe("processNode edge cases", () => {
     test("handles undefined values in input objects", () => {
       const result = sanitize({ a: undefined, b: "ok", c: null } as any);
