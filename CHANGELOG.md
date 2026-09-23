@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Security
+
+- **Numeric limits now reject `NaN` at construction.** `hppx()` and `sanitize()` throw the
+  existing `TypeError` (messages unchanged) when `maxDepth`, `maxKeys`, `maxArrayLength` or
+  `maxKeyLength` is `NaN`, for example from `Number(undefined)` on an unset setting. Previously
+  `NaN` was accepted: it silently disabled the `maxDepth`, `maxKeys` and `maxKeyLength` checks,
+  and `maxArrayLength: NaN` truncated every array-valued parameter to nothing (`undefined`
+  under `keepFirst`/`keepLast`, `[]` under `combine`). `Infinity` stays accepted for
+  `maxKeys` and `maxArrayLength` and stays rejected for `maxDepth` and `maxKeyLength`
+  (`src/index.ts`, `validateSanitizeOptions`).
+
 ### Changed
 
 - Refreshed dev dependencies within their existing ranges (`npm audit fix`, `npm update`),

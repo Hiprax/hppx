@@ -677,25 +677,31 @@ type ExpressLikeNext = (err?: unknown) => void;
 function validateSanitizeOptions(options: SanitizeOptions): void {
   if (
     options.maxDepth !== undefined &&
-    (typeof options.maxDepth !== "number" || options.maxDepth < 1 || options.maxDepth > 100)
+    (typeof options.maxDepth !== "number" ||
+      Number.isNaN(options.maxDepth) ||
+      options.maxDepth < 1 ||
+      options.maxDepth > 100)
   ) {
     throw new TypeError("maxDepth must be a number between 1 and 100");
   }
   if (
     options.maxKeys !== undefined &&
-    (typeof options.maxKeys !== "number" || options.maxKeys < 1)
+    (typeof options.maxKeys !== "number" || Number.isNaN(options.maxKeys) || options.maxKeys < 1)
   ) {
     throw new TypeError("maxKeys must be a positive number");
   }
   if (
     options.maxArrayLength !== undefined &&
-    (typeof options.maxArrayLength !== "number" || options.maxArrayLength < 1)
+    (typeof options.maxArrayLength !== "number" ||
+      Number.isNaN(options.maxArrayLength) ||
+      options.maxArrayLength < 1)
   ) {
     throw new TypeError("maxArrayLength must be a positive number");
   }
   if (
     options.maxKeyLength !== undefined &&
     (typeof options.maxKeyLength !== "number" ||
+      Number.isNaN(options.maxKeyLength) ||
       options.maxKeyLength < 1 ||
       options.maxKeyLength > 1000)
   ) {
