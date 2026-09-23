@@ -23,6 +23,20 @@
   `hppx()` and `sanitize()`, and never mutates the caller's arrays or objects (`src/index.ts`,
   `expandObjectPaths` and its new internal write helpers).
 
+### Fixed
+
+- **Stacked `hppx()` instances no longer re-expand an already-processed source.** A subsequent
+  instance (for example a router-level one behind a global one) now only restores its
+  `whitelist`, as the documented option precedence states. Previously it still ran a full key
+  expansion of the cleaned source and discarded the result: wasted work on every extra
+  instance, and a subsequent instance with a tighter `maxDepth` threw
+  `Maximum object depth (N) exceeded` on deep input, turning a valid request into an error
+  even though `maxDepth` is documented as ignored there (`src/index.ts`, `hppx`).
+- **The query string is parsed once per request under Express 5.** Express 5's `req.query` is
+  a getter that re-runs the query parser on every read; the middleware read it twice before
+  sanitizing, so every request paid for two parses (and a custom query parser ran twice). Each
+  source is now read once (`src/index.ts`, `hppx`).
+
 ### Changed
 
 - Plain nested objects reached through mixed spellings of the same key are now merged instead of

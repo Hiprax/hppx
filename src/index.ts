@@ -991,18 +991,17 @@ export default function hppx(options: HppxOptions = {}) {
            degrades gracefully if a non-Express harness invokes the middleware
            with a missing/non-object req. */
         if (!req || typeof req !== "object") break;
-        if (req[source] === undefined) continue;
+        // Read the source exactly once before sanitizing: Express 5 exposes
+        // `req.query` as a getter that re-runs the query parser on every access.
+        const part = req[source];
+        if (part === undefined) continue;
 
         if (source === "body") {
           if (checkBodyContentType === "none") continue;
           if (checkBodyContentType === "urlencoded" && !isUrlEncodedContentType(req)) continue;
         }
 
-        const part = req[source];
         if (!isPlainObject(part)) continue;
-
-        // Preprocess: expand dotted and bracketed keys into nested objects
-        const expandedPart = expandObjectPaths(part, maxKeyLength, maxDepth);
 
         const pollutedKey = `${source}Polluted`;
         const processedKey = `__hppxProcessed_${source}`;
@@ -1011,6 +1010,11 @@ export default function hppx(options: HppxOptions = {}) {
         const hasProcessedBefore = Object.prototype.hasOwnProperty.call(req, processedKey);
 
         if (!hasProcessedBefore) {
+          // Preprocess: expand dotted and bracketed keys into nested objects. Only the
+          // first pass expands: subsequent instances ignore maxDepth/maxKeyLength
+          // (documented option precedence) and only restore their whitelist.
+          const expandedPart = expandObjectPaths(part, maxKeyLength, maxDepth);
+
           // First pass for this request part: reduce arrays and collect polluted
           const { cleaned, pollutedTree, pollutedKeys } = detectAndReduce(expandedPart, {
             mergeStrategy,
