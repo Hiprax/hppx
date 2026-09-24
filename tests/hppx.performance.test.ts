@@ -228,4 +228,65 @@ describe("hppx - Performance Optimizations", () => {
       expect(duration).toBeLessThan(250);
     });
   });
+
+  describe("Collision merge scales linearly and never overflows the stack", () => {
+    test("combining 30,000 distinct spellings of one key stays linear", () => {
+      // Key i is "a" followed by the binary digits of i with 1 -> "[" and 0 -> ".",
+      // e.g. "a[", "a[.", "a[[": all distinct, at most 16 characters, accepted by
+      // sanitizeKey, and every one parses to the single path ["a"]. Each spelling
+      // after the first is a collision at the same leaf, so a merge that copied
+      // the growing array on every collision would be quadratic.
+      const input: Record<string, unknown> = {};
+      for (let i = 1; i <= 30000; i++) {
+        const key = "a" + i.toString(2).replace(/1/g, "[").replace(/0/g, ".");
+        input[key] = `v${i}`;
+      }
+      expect(Object.keys(input)).toHaveLength(30000);
+
+      // Warm up to amortize first-call costs (JIT, path-segment cache).
+      sanitize(input, { mergeStrategy: "combine" });
+
+      const start = Date.now();
+      const cleaned = sanitize<Record<string, unknown>>(input, { mergeStrategy: "combine" });
+      const duration = Date.now() - start;
+
+      // The combined array keeps key order and is truncated to the default
+      // maxArrayLength (1000) afterwards; no other key survives.
+      expect(Object.keys(cleaned)).toEqual(["a"]);
+      const combined = cleaned.a as unknown[];
+      expect(combined).toHaveLength(1000);
+      expect(combined[0]).toBe("v1");
+      expect(combined[999]).toBe("v1000");
+      // Linear in-place appends finish in well under 1500 ms even with coverage
+      // instrumentation; copying on every collision takes several seconds.
+      expect(duration).toBeLessThan(1500);
+    });
+
+    test("a deep overlapping merge reports the depth limit, never a stack overflow", () => {
+      // A 999-character dotted key expands into 500 nested levels, so two
+      // spellings of `x` whose values nest it 100 times overlap for about
+      // 50,000 levels. A recursive merge overflows the call stack there; the
+      // iterative merge completes and the documented depth error is reported.
+      const seg = Array.from({ length: 500 }, () => "k").join(".");
+      expect(seg).toHaveLength(999);
+      const nest = (n: number): unknown => {
+        let node: unknown = "leaf";
+        for (let i = 0; i < n; i++) node = { [seg]: node };
+        return node;
+      };
+
+      let thrown: unknown;
+      try {
+        sanitize({ x: nest(100), "x.": nest(100) }, { maxDepth: 100, maxKeyLength: 1000 });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeDefined();
+      // `toThrow(Error)` would also accept a RangeError (a subclass), so pin the
+      // exact constructor and message.
+      expect((thrown as Error).constructor).toBe(Error);
+      expect(thrown).not.toBeInstanceOf(RangeError);
+      expect((thrown as Error).message).toBe("Maximum object depth (100) exceeded");
+    });
+  });
 });

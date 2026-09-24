@@ -286,22 +286,26 @@ describe("empty-array characterization — current intended behavior (C2)", () =
 
 describe("scalar–dotted key collision — current intended behavior (C3)", () => {
   // Pins: expandObjectPaths processes keys in JavaScript object insertion order.
-  // When a plain key and a dotted key share a path prefix ('a' and 'a.b'),
-  // the LAST-processed key wins by overwriting. This is order-dependent and lossy
-  // by design — hppx is an HTTP pollution guard, not a key-path merger. Do NOT
-  // change expandObjectPaths or setIn to alter this ordering.
+  // When a scalar key and a dotted key share a path prefix ('a' and 'a.b'), the
+  // conflict is structural (exactly one side is a plain object) and the
+  // LAST-processed key wins by overwriting. Same-leaf duplicates ('a' and 'a[]',
+  // 'a.b' and 'a[b]') are different: they are combined and detected as pollution
+  // while the earlier value is still in place, see tests/hppx.key-collision.test.ts.
+  // A value that a structural conflict has already overwritten is gone, so a later
+  // spelling of the same leaf is not combined with it. Do NOT change
+  // expandObjectPaths or its write helpers to alter this structural ordering.
 
   test("collision {a:1,'a.b':2} -> {a:{b:2}}: dotted key wins when processed last — pins current behavior", () => {
-    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and setIn
-    // overwrites result.a (scalar 1) with {b:2} because setIn replaces any
-    // non-plain-object at an intermediate path segment with a fresh {}.
+    // 'a.b' is inserted after 'a'; expandObjectPaths expands it last and
+    // setInExpanded overwrites result.a (scalar 1) with {b:2} because it replaces
+    // any non-plain-object at an intermediate path segment with a fresh {}.
     const result = sanitize({ a: 1, "a.b": 2 } as any);
     expect(result).toEqual({ a: { b: 2 } });
   });
 
   test("collision reversed {'a.b':2,a:1} -> {a:1}: plain key wins when processed last — pins current behavior", () => {
-    // 'a' is processed after 'a.b' expansion; plain assignment overwrites the nested
-    // object {b:2} with the scalar 1 because plain (non-dotted) keys bypass setIn.
+    // 'a' is processed after 'a.b' expansion; assignExpanded overwrites the nested
+    // object {b:2} with the scalar 1 because exactly one side is a plain object.
     const result = sanitize({ "a.b": 2, a: 1 } as any);
     expect(result).toEqual({ a: 1 });
   });
@@ -309,7 +313,7 @@ describe("scalar–dotted key collision — current intended behavior (C3)", () 
 
 describe("cross-source partial mutation on limit error — in-order in-place commit model (C9)", () => {
   // Pins: sources are processed in order (the `sources` array) and each source's sanitized
-  // result is committed in-place to req via setReqPropertySafe (src/index.ts:888) before the
+  // result is committed in-place to req via setReqPropertySafe (src/index.ts:1037) before the
   // next source begins. When a later source exceeds maxDepth or maxKeys, the error is forwarded
   // to next() immediately — but any earlier sources that already completed are already sanitized
   // on req while the throwing source stays raw.
@@ -320,7 +324,7 @@ describe("cross-source partial mutation on limit error — in-order in-place com
   test("earlier source (query) committed in-place before later source (body) throws on maxDepth — pins current behavior", () => {
     // Pins the in-order, in-place commit model: req.query is reduced and written
     // to req before body processing even starts. A body that exceeds maxDepth causes
-    // expandObjectPaths (src/index.ts:863) to throw, which the outer catch forwards to
+    // expandObjectPaths (src/index.ts:1019) to throw, which the outer catch forwards to
     // next(error). At that point req.query is already { x: "2" } and req.body is unchanged.
     const middleware = hppx({
       maxDepth: 1,
@@ -358,9 +362,9 @@ describe("cross-source partial mutation on limit error — in-order in-place com
 
 describe("combine + whitelist interaction — current intended behavior (C4)", () => {
   // Pins: detectAndReduce stores the original (pre-combine) cloned array in the polluted tree
-  // (src/index.ts:592), then mergeValues flattens it for the cleaned output. Afterwards,
+  // (src/index.ts:731), then mergeValues flattens it for the cleaned output. Afterwards,
   // moveWhitelistedFromPolluted restores the raw polluted-tree entry into cleaned for whitelisted
-  // keys (src/index.ts:487-516). This means whitelisted keys preserve the un-flattened array —
+  // keys (src/index.ts:626-655). This means whitelisted keys preserve the un-flattened array —
   // the data-preservation contract documented in the README as "Keys allowed to remain as arrays".
   // Do NOT alter this two-pass flow (detectAndReduce → moveWhitelistedFromPolluted).
 
@@ -388,7 +392,7 @@ describe("combine + whitelist interaction — current intended behavior (C4)", (
 
   test("combine + whitelist middleware: req.queryPolluted pruned empty for whitelisted key — pins current behavior", async () => {
     // Pins: after moveWhitelistedFromPolluted restores x from polluted tree, pollutedTree.x is
-    // deleted (src/index.ts:511), so req.queryPolluted becomes {} even though pollution was
+    // deleted (src/index.ts:649), so req.queryPolluted becomes {} even though pollution was
     // detected. The query value is preserved as the raw array from the polluted tree.
     const app = express();
     app.use(

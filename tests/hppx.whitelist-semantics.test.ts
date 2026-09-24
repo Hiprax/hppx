@@ -14,7 +14,7 @@
  * 2. `strict` and `logPollution` are WIRE-LEVEL DETECTION signals. They are
  *    driven by `anyPollutionDetected`, which is set from the pre-restoration
  *    `pollutedKeys` array returned by `detectAndReduce` (accumulated at
- *    src/index.ts:918–921 — after whitelist restoration at :915, but using
+ *    src/index.ts:1070–1073 — after whitelist restoration at :1067, but using
  *    pre-restoration data). A whitelisted key that arrives duplicated on the
  *    wire still triggers strict mode (→ HTTP 400) and logPollution (→ warning
  *    via logger/console.warn) because `anyPollutionDetected` is derived from
@@ -22,16 +22,16 @@
  *
  * 3. `onPollutionDetected` and req.*Polluted reflect POST-RESTORATION state.
  *    The callback fires only when req.[source]Polluted is non-empty AFTER
- *    whitelist restoration (src/index.ts:955: Object.keys(pollutedData).length
+ *    whitelist restoration (src/index.ts:1107: Object.keys(pollutedData).length
  *    > 0). When ALL polluted keys are whitelisted, the tree is {} after
  *    restoration and the callback is NOT called. When SOME (partial) are
  *    whitelisted, the callback fires — and its info.pollutedKeys reports ALL
  *    pre-restoration polluted keys for that source (both whitelisted and
- *    non-whitelisted) via src/index.ts:956–963 (allPollutedKeys.filter).
+ *    non-whitelisted) via src/index.ts:1108–1115 (allPollutedKeys.filter).
  *
- * Source lines verified: src/index.ts:873 (detectAndReduce), :915
- *   (moveWhitelistedFromPolluted), :918–921 (anyPollutionDetected
- *   accumulation), :955 (onPollutionDetected trigger condition), :971–978
+ * Source lines verified: src/index.ts:1022 (detectAndReduce), :1067
+ *   (moveWhitelistedFromPolluted), :1070–1073 (anyPollutionDetected
+ *   accumulation), :1107 (onPollutionDetected trigger condition), :1123–1130
  *   (strict 400 response).
  */
 import express from "express";
@@ -57,7 +57,7 @@ function buildApp(opts: Parameters<typeof hppx>[0]) {
 
 describe("T5.1 — strict + whitelist: wire-level 400 regardless of whitelist setting", () => {
   it("strict:true returns HTTP 400 even when the only duplicated key is whitelisted — pins intended behavior", async () => {
-    // strict fires on the pre-restoration pollutedKeys signal (src/index.ts:971-978).
+    // strict fires on the pre-restoration pollutedKeys signal (src/index.ts:1123-1130).
     // whitelist only controls data preservation; it does NOT suppress strict mode.
     // This is the intentional security posture: wire-level HPP is always rejected
     // in strict mode, even if the application has opted in to receiving that key
@@ -95,9 +95,9 @@ describe("T5.2 — three-signal semantics: logPollution / onPollutionDetected / 
     async () => {
       // Pins current intended behavior.
       // logPollution fires because anyPollutionDetected is set from the
-      // pre-restoration pollutedKeys (src/index.ts:918-921, :933-946).
+      // pre-restoration pollutedKeys (src/index.ts:1070-1073, :1085-1099).
       // onPollutionDetected does NOT fire because after whitelist restoration
-      // req.queryPolluted is {} — the guard at src/index.ts:955 fails:
+      // req.queryPolluted is {} — the guard at src/index.ts:1107 fails:
       //   Object.keys(pollutedData).length > 0  →  false  →  callback skipped.
       const logMessages: string[] = [];
       const detectedCalls: { source: string; pollutedKeys: string[] }[] = [];
@@ -145,9 +145,9 @@ describe("T5.2 — three-signal semantics: logPollution / onPollutionDetected / 
       // Pins current intended behavior.
       // whitelist: ["a"] → "a" is data-preserved; "b" is not.
       // After moveWhitelistedFromPolluted: req.queryPolluted = { b: ["1","2"] }
-      // (non-empty). Condition at src/index.ts:955 passes → callback fires.
+      // (non-empty). Condition at src/index.ts:1107 passes → callback fires.
       // The callback's pollutedKeys comes from allPollutedKeys.filter(...)
-      // (src/index.ts:956-963), which was built from the PRE-restoration
+      // (src/index.ts:1108-1115), which was built from the PRE-restoration
       // pollutedKeys set — so it includes BOTH "query.a" and "query.b" even
       // though "a" has already been restored.
       const detectedCalls: { source: string; pollutedKeys: string[] }[] = [];

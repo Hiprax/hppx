@@ -153,6 +153,8 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 | `maxArrayLength` | `number` | `1000`  | >= 1     | Maximum array length. Arrays are truncated before processing.                         |
 | `maxKeyLength`   | `number` | `200`   | 1 - 1000 | Maximum key string length. Longer keys are silently dropped.                          |
 
+> **Note:** A limit outside its range, a value that is not a number (`undefined` selects the default), or `NaN` (for example `Number(process.env.UNSET)` for an unset setting) throws a `TypeError` when the middleware is created, and `sanitize()` throws the same error. `Infinity` is accepted for `maxKeys` and `maxArrayLength`, which have no upper bound.
+
 > **Note — in-order, in-place commit model:** Sources are processed in the order specified by the `sources` array and each source's sanitized result is committed in-place to `req` before the next source begins. When `maxDepth` or `maxKeys` is exceeded, the error is forwarded to `next()` immediately — but **any earlier sources that already completed are already sanitized on `req`** while the throwing source stays raw. Error handlers should not assume an atomic all-or-nothing transform across sources.
 
 **Behavior & Callbacks:**
@@ -378,17 +380,18 @@ app.use(
 
 ### What hppx Protects Against
 
-| Threat                       | Protection                                                                                                                                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Parameter pollution**      | Duplicate parameters are reduced to a single value via the chosen merge strategy                                                                                                           |
-| **Prototype pollution**      | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level                                                                                                         |
-| **DoS via deep nesting**     | `maxDepth` limit throws error on excessive nesting                                                                                                                                         |
-| **DoS via key flooding**     | `maxKeys` limit throws error when key count is exceeded                                                                                                                                    |
-| **DoS via large arrays**     | `maxArrayLength` truncates arrays before processing                                                                                                                                        |
-| **DoS via long keys**        | `maxKeyLength` silently drops excessively long keys                                                                                                                                        |
-| **Null-byte injection**      | Keys containing `\u0000` are silently dropped                                                                                                                                              |
-| **Control / bidi key chars** | Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`) or Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, BOM) are dropped |
-| **Malformed keys**           | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped                                                                                                                  |
+| Threat                          | Protection                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Parameter pollution**         | Duplicate parameters, including a parameter repeated under alternate key spellings, are reduced to a single value via the chosen merge strategy                                                                                                                                                                                                                                    |
+| **Alternate-syntax duplicates** | Spellings that expand to the same key (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined and reported as duplicates, so `strict` mode rejects them. A structural conflict (one spelling assigns a value directly to a key, another nests keys under it) is not reported and replaces the earlier value, which is then not combined with later spellings of that key (FAQ 9) |
+| **Prototype pollution**         | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level                                                                                                                                                                                                                                                                                                 |
+| **DoS via deep nesting**        | `maxDepth` limit throws error on excessive nesting                                                                                                                                                                                                                                                                                                                                 |
+| **DoS via key flooding**        | `maxKeys` limit throws error when key count is exceeded                                                                                                                                                                                                                                                                                                                            |
+| **DoS via large arrays**        | `maxArrayLength` truncates arrays before processing                                                                                                                                                                                                                                                                                                                                |
+| **DoS via long keys**           | `maxKeyLength` silently drops excessively long keys                                                                                                                                                                                                                                                                                                                                |
+| **Null-byte injection**         | Keys containing `\u0000` are silently dropped                                                                                                                                                                                                                                                                                                                                      |
+| **Control / bidi key chars**    | Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`) or Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, BOM) are dropped                                                                                                                                                                                         |
+| **Malformed keys**              | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped                                                                                                                                                                                                                                                                                                          |
 
 ### Production Configuration
 
@@ -471,7 +474,7 @@ before hppx runs, hppx will emit a warning via the configured `logger` (or
 **4. Control / bidirectional override characters in keys are rejected.**
 Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`),
 Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO,
-LRI/RLI/FSI/PDI), or BOM (`﻿`) are silently dropped. This prevents
+LRI/RLI/FSI/PDI), or BOM (`\uFEFF`) are silently dropped. This prevents
 log-injection / DB-corruption tricks that use invisible control characters
 to disguise key names.
 
@@ -493,7 +496,8 @@ These two concerns are deliberately independent:
   keys — they are not further reduced.
 - **`strict`** and **`logPollution`** are driven by pre-restoration data — the `pollutedKeys`
   set returned by `detectAndReduce` captures every parameter that arrived duplicated on the
-  wire, regardless of whitelist configuration. Because `anyPollutionDetected` is set from
+  wire (except the structural conflicts described in FAQ 9), regardless of whitelist
+  configuration. Because `anyPollutionDetected` is set from
   that pre-restoration snapshot, a whitelisted key that arrives duplicated on the wire still
   causes `strict: true` to return HTTP 400 and `logPollution: true` to emit a warning.
 
@@ -515,6 +519,58 @@ Two consequences:
   the wire-level signal). If _some_ (but not all) keys are whitelisted, the callback fires for
   that source — and its `info.pollutedKeys` array contains **all** pre-restoration polluted
   keys (both whitelisted and non-whitelisted ones).
+
+**8. Express 5 wildcard route params are arrays.**
+
+Express 5 delivers a wildcard (splat) route param as an array of path segments: with
+`app.get("/files/*filepath", ...)`, `GET /files/a/b/c.txt` gives `req.params.filepath` as
+`["a", "b", "c.txt"]`. hppx cannot tell a framework-built array from an injected duplicate, so it
+treats the splat like any other array-valued parameter:
+
+- A route-level `hppx()` with the default `sources` reduces it (`keepLast` leaves
+  `req.params.filepath === "c.txt"`), keeps the full array in `req.paramsPolluted`, and reports
+  `params.filepath` to `onPollutionDetected` and the pollution log. A required `*name` wildcard
+  always yields an array, so a single-segment path such as `/files/c.txt` (`["c.txt"]`) is
+  flagged too.
+- With `strict: true`, that route-level instance rejects every request that matches a required
+  wildcard route with HTTP 400 (`pollutedParameters: ["params.filepath"]`).
+- Workaround: pass `sources: ["query", "body"]` to the `hppx()` on wildcard routes. The splat
+  array reaches the handler intact, and duplicated query parameters are still reduced, or
+  rejected in strict mode. Body handling is unchanged (it still follows `checkBodyContentType`).
+- A global `app.use(hppx())` runs before routing, when `req.params` is still an empty object, so
+  it never sees route params and leaves the splat array untouched. Because it marks `params` as
+  processed for that request, a later route-level `hppx()` on the same request only restores its
+  `whitelist` and neither reduces nor rejects the splat (see FAQ 2).
+
+**9. Keys that normalize to the same path are duplicates.**
+
+hppx expands dotted and bracketed keys into nested objects before it looks for duplicates, and
+spellings that expand to the same path count as a repeated parameter: `a`, `a[]`, `a.` and `[a]`
+all name `a`; `a.b`, `a[b]` and a nested `{ a: { b: ... } }` all name `a.b`. This matters most under
+Express 5's default `"simple"` query parser, which keeps `?a=1&a[]=2` as two separate keys (`a` and
+`a[]`), but it applies to every source and to `sanitize()`.
+
+- The values are combined into one array, which is then treated like any duplicate: the merge
+  strategy reduces it (for `?a=1&a[]=2`, `keepLast` gives `"2"`, `keepFirst` gives `"1"` and
+  `combine` gives `["1", "2"]`), the array is recorded in `req.queryPolluted` (etc.) and reported
+  to `onPollutionDetected` and the pollution log, and `strict: true` rejects the request with HTTP
+  400 (`?user.role=user&user[role]=admin` is reported as `query.user.role`).
+- A `whitelist` entry for the key keeps the combined array, as it does for a repeated parameter.
+  As FAQ 6 explains, `strict` and `logPollution` still react to the duplicate.
+- Values are combined in the order in which the parser presents the keys, which is not always
+  wire order. The simple parser groups repeats of the same spelling, so `?a=1&b=x&a[]=2&a=3`
+  arrives as `{ a: ["1", "3"], b: "x", "a[]": "2" }` and combines to `["1", "3", "2"]`.
+- The limits apply to the combined array as to any array: `maxArrayLength` truncates it before
+  reduction, so when it is longer than the limit `keepLast` can keep an earlier spelling; and a
+  nested duplicate whose path is exactly `maxDepth + 1` keys long throws the depth error, because
+  the combined array adds a nesting level (an exact duplicate at that depth already did).
+- Plain objects reached through different spellings are merged instead of the later one
+  replacing the earlier: `{ "a.b": "1", a: { c: "2" } }` gives `{ a: { b: "1", c: "2" } }`.
+- A structural conflict is not a duplicate. When one spelling assigns a value directly to a key
+  and another nests keys under it (`a` and `a.b`), the last-processed shape wins:
+  `{ a: "1", "a.b": "2" }` gives `{ a: { b: "2" } }`, the reverse key order gives `{ a: "1" }`. The
+  conflict is not reported, and the value it replaces is not combined with later spellings of the
+  same key, so the outcome depends on key order.
 
 ---
 

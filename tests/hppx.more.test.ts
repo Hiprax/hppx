@@ -244,5 +244,45 @@ describe("hppx - additional edge cases and branches", () => {
       // Only c remains in queryPolluted.
       expect(res.body.queryPolluted).toEqual({ c: ["5", "6"] });
     });
+
+    it("ignores maxDepth on a subsequent middleware: deep input is not re-expanded or rejected", async () => {
+      // README "Option Precedence" lists maxDepth as ignored on subsequent
+      // instances. A router-level instance with a tighter maxDepth than the
+      // global one must only restore its whitelist, never walk (and throw on)
+      // the already-cleaned source.
+      const errors: unknown[] = [];
+      const app = express();
+      app.set("query parser", "extended");
+      app.use(hppx({ logPollution: false, maxDepth: 20 }));
+      const router = express.Router();
+      router.use(hppx({ logPollution: false, maxDepth: 1, whitelist: ["a"] }));
+      router.get("/r", (req, res) =>
+        res.json({
+          query: req.query,
+          queryPolluted: (req as any).queryPolluted,
+        }),
+      );
+      app.use(router);
+      app.use(
+        (
+          err: unknown,
+          _req: express.Request,
+          res: express.Response,
+          _next: express.NextFunction,
+        ) => {
+          errors.push(err);
+          res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        },
+      );
+
+      const res = await request(app).get("/r?a=1&a=2&x[y][z]=1");
+
+      expect(res.status).toBe(200);
+      // The router instance's whitelist was still honored...
+      expect(res.body.query).toEqual({ a: ["1", "2"], x: { y: { z: "1" } } });
+      expect(res.body.queryPolluted).toEqual({});
+      // ...and its maxDepth was not: no error reached the error handler.
+      expect(errors).toEqual([]);
+    });
   });
 });
