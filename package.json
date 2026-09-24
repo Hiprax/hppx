@@ -46,7 +46,7 @@
     "dev": "tsup --watch",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "test:watch": "jest --watch",
+    "test:watch": "jest --watch --coverage=false",
     "prepare": "npm run build && npm run check-dts",
     "check-dts": "node scripts/check-dts-parity.mjs",
     "check-types-pack": "attw --pack .",
