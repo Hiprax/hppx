@@ -1,6 +1,24 @@
 # Changelog
 
-## [Unreleased]
+## v0.3.0 — Alternate-syntax duplicate detection, NaN-safe limits & dependency refresh (2026-09-24)
+
+Two security fixes, two middleware fixes, and a dev-dependency refresh. Both security fixes
+change observable behavior, so this is a minor release: a `^0.2.x` range does not pick it up.
+`hppx()` now throws a `TypeError` when it is created, and `sanitize()` when it is called, for
+`NaN` limits, which were silently accepted. A parameter duplicated through an alternate key
+spelling is now detected as pollution, except where a structural conflict replaces the earlier
+value (see Security): it appears in `req.*Polluted`, `onPollutionDetected` and the log line,
+`keepFirst`, `combine` and `whitelist` apply to it, and `strict: true` responds with 400. With
+the default `keepLast`, without `strict` and without a `whitelist` entry, such scalar
+duplicates keep the cleaned value they had before and only gain the pollution signals, with
+two exceptions that match how exact duplicates already behave: `maxArrayLength` truncates the
+combined array before reduction, so `keepLast` can keep an earlier spelling; and a nested
+duplicate whose path is exactly `maxDepth + 1` keys long now fails with the depth error. Some
+unusual JSON inputs also reduce differently: `{ "a": "x", "a.": [] }` now keeps `"x"`, where
+the empty array used to replace it and reduce to `undefined`. Opt-outs: whitelist a key to keep
+its values as an array, or run without `strict`. Plain nested objects reached through mixed
+spellings are now merged instead of the later one replacing the earlier. No new options or
+exports.
 
 ### Security
 
@@ -73,6 +91,23 @@
   (`sources: ["query", "body"]` on wildcard routes) and why a global `app.use(hppx())` leaves the
   splat untouched, including for later route-level instances on the same request. No behavior
   change.
+- **README FAQ 9: keys that normalize to the same path are duplicates.** Documents how
+  alternate spellings are combined, reduced, reported and rejected in strict mode, that a
+  `whitelist` entry keeps the combined array, the parser-order note, the `maxArrayLength` and
+  `maxDepth + 1` exceptions, plain-object merging, and structural conflicts. The security table
+  gains an "Alternate-syntax duplicates" row, the limits table notes that `NaN` and non-number
+  limits throw a `TypeError`, and FAQ 4 shows the BOM as the `\uFEFF` escape instead of an
+  invisible literal character.
+
+### Verified
+
+- `npm run verify`: all 7 gates pass (build, `check-dts` with 11 matching symbols,
+  `check-types-pack`, typecheck, lint with 0 warnings, `format:check`, test) on Node 24.19.0
+  and on Node 18.20.8.
+- `npm test`: 310/310 passing across 11 suites; coverage 99.75% stmts, 95.84% branches,
+  100% funcs/lines, now enforced as a floor by `coverageThreshold` in `jest.config.ts`.
+- `npm audit`: 0 vulnerabilities.
+- `npm ci` on npm 11: zero `npm warn` lines.
 
 ## v0.2.9 — Polluted-tree hardening, combine stack-safety & coverage (2026-06-30)
 
