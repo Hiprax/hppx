@@ -632,7 +632,7 @@ describe("hppx - Security Features", () => {
   });
 
   describe("onPollutionDetected callback throw is swallowed", () => {
-    // These tests exercise the try/catch at src/index.ts:959-978 that silently
+    // These tests exercise the try/catch at src/index.ts:1102-1121 that silently
     // discards user-callback errors so they cannot disrupt request processing.
 
     test("non-strict: throwing callback contained; next() called without error; req.queryPolluted populated", () => {
@@ -657,8 +657,8 @@ describe("hppx - Security Features", () => {
     });
 
     test("strict + throwing callback: throw contained; 400 HPP_DETECTED still returned; next not called", () => {
-      // The onPollutionDetected try/catch (src/index.ts:959-978) runs BEFORE the
-      // strict block (src/index.ts:980-987), so a contained throw cannot suppress
+      // The onPollutionDetected try/catch (src/index.ts:1102-1121) runs BEFORE the
+      // strict block (src/index.ts:1123-1130), so a contained throw cannot suppress
       // the strict 400 response.
       const mw = hppx({
         strict: true,
@@ -683,7 +683,7 @@ describe("hppx - Security Features", () => {
   });
 
   describe("strict mode degrades gracefully when res.status is not a function", () => {
-    // Exercises the third operand of the compound condition at src/index.ts:980:
+    // Exercises the third operand of the compound condition at src/index.ts:1123:
     // `strict && res && typeof res.status === "function"`. When res.status is
     // absent (non-Express harness), the condition short-circuits to false and
     // the middleware falls through to next() rather than throwing a TypeError.

@@ -407,6 +407,25 @@ describe("combined duplicates interact with whitelists, strategies and limits as
     expect(out.a).not.toContain("3");
   });
 
+  it("keepLast keeps the last spelling that survives maxArrayLength truncation of a combined array", () => {
+    const input = { a: "1", "a.": "2", "a[]": "3" };
+    // Truncation runs before reduction: with room for two values the third spelling is cut off.
+    expect(sanitize(input, { maxArrayLength: 2 })).toEqual({ a: "2" });
+    // One more slot keeps it, so the cut-off above is caused by the limit alone.
+    expect(sanitize(input, { maxArrayLength: 3 })).toEqual({ a: "3" });
+  });
+
+  it("two spellings of a leaf at depth maxDepth + 1 hit the depth limit like an exact duplicate, while one spelling passes", () => {
+    const depthError = new Error("Maximum object depth (1) exceeded");
+    // a.b is maxDepth + 1 keys long: a lone scalar there is not depth-checked...
+    expect(sanitize({ "a.b": "1" }, { maxDepth: 1 })).toEqual({ a: { b: "1" } });
+    // ...but the combined array sits one level too deep, exactly like an exact duplicate.
+    expect(() => sanitize({ "a.b": "1", "a[b]": "2" }, { maxDepth: 1 })).toThrow(depthError);
+    expect(() => sanitize({ "a.b": ["1", "2"] }, { maxDepth: 1 })).toThrow(depthError);
+    // One more level of allowance accepts the duplicate and reduces it.
+    expect(sanitize({ "a.b": "1", "a[b]": "2" }, { maxDepth: 2 })).toEqual({ a: { b: "2" } });
+  });
+
   it("two spellings of user.role are reported once, under the normalized dotted path", async () => {
     const calls: { source: string; pollutedKeys: string[] }[] = [];
     const { app } = appWith({ onPollutionDetected: (_req, info) => calls.push(info) }, "extended");

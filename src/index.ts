@@ -138,7 +138,10 @@ const pathSegmentCache = new Map<string, string[]>();
  *      guard `setIn` applies to the paths it writes); segments are not re-run
  *      through `sanitizeKey`. Different spellings that parse to the same path
  *      (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined as duplicates
- *      by `expandObjectPaths`, so they cannot hide a repeated parameter.
+ *      by `expandObjectPaths`. A structural conflict (one spelling nests keys
+ *      under a path that another spelling assigns a value to) still resolves
+ *      last-processed-wins, so a value it overwrites is not combined with
+ *      later spellings of that path.
  *
  *   3. Strict grammar enforcement here would be a behavioral change that
  *      could break legitimate users with unusual key shapes, while

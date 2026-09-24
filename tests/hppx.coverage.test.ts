@@ -468,7 +468,9 @@ describe("hppx - Coverage for Edge Cases", () => {
     });
   });
 
-  describe("setIn dangerous last key protection", () => {
+  describe("dangerous last path segment never reaches the sanitized output", () => {
+    // Dotted keys are expanded by expandObjectPaths' own write helpers, not setIn;
+    // setIn's guards are pinned by the prototype-pollution gadget describe below.
     test("blocks dangerous keys in last path segment", () => {
       // "a.__proto__" passes sanitizeKey (not in DANGEROUS_KEYS itself),
       // but when expanded to path ["a", "__proto__"], the last segment is blocked
@@ -553,7 +555,7 @@ describe("hppx - Coverage for Edge Cases", () => {
       const app = express();
 
       // Define req.body as a getter that throws a string (not an Error instance)
-      // This exercises the catch block's non-Error wrapping at line 668
+      // This exercises the catch block's non-Error wrapping at src/index.ts:1136
       app.use((req: any, _res, next) => {
         Object.defineProperty(req, "body", {
           get() {

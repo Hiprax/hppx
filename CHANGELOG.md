@@ -19,9 +19,16 @@
   `?user.role=user&user[role]=admin` (either parser) reached the route as a single value with no
   pollution signal and passed `strict` mode. They are now combined into one array in key order:
   `strict: true` rejects them with 400, they appear in `req.*Polluted`, `onPollutionDetected`
-  and the log line, and `mergeStrategy` and `whitelist` apply to them. For scalar duplicates the value kept by the default `keepLast` is unchanged. The fix covers both
-  `hppx()` and `sanitize()`, and never mutates the caller's arrays or objects (`src/index.ts`,
-  `expandObjectPaths` and its new internal write helpers).
+  and the log line, and `mergeStrategy` and `whitelist` apply to them. For scalar duplicates the
+  value kept by the default `keepLast` is unchanged, with two exceptions: `maxArrayLength`
+  truncates the combined array, so the last spelling can be cut off; and a nested duplicate
+  whose path is exactly `maxDepth + 1` keys long now fails with the depth error, because the
+  combined array there exceeds `maxDepth` (an exact duplicate there already did). Structural
+  conflicts are unchanged: when one spelling nests keys under a parameter (`a.x`) and another
+  assigns the parameter itself a value (`a`), the last-processed shape still wins and the
+  conflict itself is not reported, so a value it replaces is not combined with later spellings
+  of the same key. The fix covers both `hppx()` and `sanitize()`, and never mutates the caller's
+  arrays or objects (`src/index.ts`, `expandObjectPaths` and its new internal write helpers).
 
 ### Fixed
 
@@ -40,9 +47,9 @@
 ### Changed
 
 - Plain nested objects reached through mixed spellings of the same key are now merged instead of
-  the later one replacing the earlier, so expansion no longer depends on key order:
-  `{ "a.b": "1", a: { c: "2" } }` now gives `{ a: { b: "1", c: "2" } }` (previously
-  `{ a: { c: "2" } }`). Structural conflicts, where only one side is an object, keep
+  the later one replacing the earlier, so a later spelling no longer drops keys that only the
+  earlier one set: `{ "a.b": "1", a: { c: "2" } }` now gives `{ a: { b: "1", c: "2" } }`
+  (previously `{ a: { c: "2" } }`). Structural conflicts, where only one side is an object, keep
   last-processed-wins: `{ a: "1", "a.b": "2" }` still gives `{ a: { b: "2" } }`.
 - Refreshed dev dependencies within their existing ranges (`npm audit fix`, `npm update`),
   clearing every `npm audit` advisory (7 dev-only: `baseline-browser-mapping`, `body-parser`,
