@@ -51,7 +51,7 @@
     "check-dts": "node scripts/check-dts-parity.mjs",
     "check-types-pack": "attw --pack .",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "verify": "node scripts/verify.mjs",

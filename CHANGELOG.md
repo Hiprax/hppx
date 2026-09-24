@@ -102,8 +102,8 @@ exports.
 ### Verified
 
 - `npm run verify`: all 7 gates pass (build, `check-dts` with 11 matching symbols,
-  `check-types-pack`, typecheck, lint with 0 warnings, `format:check`, test) on Node 24.19.0
-  and on Node 18.20.8.
+  `check-types-pack`, typecheck, lint with 0 warnings (enforced by `--max-warnings 0`),
+  `format:check`, test) on Node 24.19.0 and on Node 18.20.8.
 - `npm test`: 310/310 passing across 11 suites; coverage 99.75% stmts, 95.84% branches,
   100% funcs/lines, now enforced as a floor by `coverageThreshold` in `jest.config.ts`.
 - `npm audit`: 0 vulnerabilities.
