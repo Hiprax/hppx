@@ -263,10 +263,15 @@ describe("hppx - nested and strategies", () => {
 });
 
 // ─── Phase 2 / C1: req.params end-to-end coverage ───────────────────────────
-// Express never produces duplicate route params naturally (each :param captures
-// exactly one segment). Tests inject them via a route-level pre-middleware that
-// sets req.params before hppx runs, exercising the shared detection loop at
-// src/index.ts:991-1083 for the "params" source.
+// A named `:param` captures exactly one path segment, so it is always a string,
+// but Express 5 wildcards (`*name`) deliver an array of segments. hppx cannot
+// tell a framework array from an injected one, so T2.1/T2.2 pin that any array in
+// req.params is reduced and reported as pollution, whatever its origin. These
+// tests inject the arrays via a route-level pre-middleware that sets req.params
+// before hppx runs, exercising the shared detection loop at
+// src/index.ts:991-1083 for the "params" source. Real Express 5 splat params are
+// pinned in tests/hppx.express5.test.ts ("hppx - Express 5 wildcard (splat) params")
+// and documented in README FAQ 8.
 describe("hppx - req.params end-to-end (C1)", () => {
   // T2.1 — pins current intended behavior: params source reduces duplicate
   // array values and exposes req.paramsPolluted.
@@ -275,7 +280,7 @@ describe("hppx - req.params end-to-end (C1)", () => {
     app.get(
       "/item",
       (req: any, _res: any, next: any) => {
-        // Inject duplicate params — Express would never produce these naturally
+        // Inject duplicate params: a `:param` route never produces an array
         req.params = { id: ["1", "2"], name: "ok" };
         next();
       },

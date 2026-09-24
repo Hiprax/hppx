@@ -516,6 +516,28 @@ Two consequences:
   that source — and its `info.pollutedKeys` array contains **all** pre-restoration polluted
   keys (both whitelisted and non-whitelisted ones).
 
+**8. Express 5 wildcard route params are arrays.**
+
+Express 5 delivers a wildcard (splat) route param as an array of path segments: with
+`app.get("/files/*filepath", ...)`, `GET /files/a/b/c.txt` gives `req.params.filepath` as
+`["a", "b", "c.txt"]`. hppx cannot tell a framework-built array from an injected duplicate, so it
+treats the splat like any other array-valued parameter:
+
+- A route-level `hppx()` with the default `sources` reduces it (`keepLast` leaves
+  `req.params.filepath === "c.txt"`), keeps the full array in `req.paramsPolluted`, and reports
+  `params.filepath` to `onPollutionDetected` and the pollution log. A required `*name` wildcard
+  always yields an array, so a single-segment path such as `/files/c.txt` (`["c.txt"]`) is
+  flagged too.
+- With `strict: true`, that route-level instance rejects every request that matches a required
+  wildcard route with HTTP 400 (`pollutedParameters: ["params.filepath"]`).
+- Workaround: pass `sources: ["query", "body"]` to the `hppx()` on wildcard routes. The splat
+  array reaches the handler intact, and duplicated query parameters are still reduced, or
+  rejected in strict mode. Body handling is unchanged (it still follows `checkBodyContentType`).
+- A global `app.use(hppx())` runs before routing, when `req.params` is still an empty object, so
+  it never sees route params and leaves the splat array untouched. Because it marks `params` as
+  processed for that request, a later route-level `hppx()` on the same request only restores its
+  `whitelist` and neither reduces nor rejects the splat (see FAQ 2).
+
 ---
 
 ## License

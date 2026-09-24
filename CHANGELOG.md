@@ -63,6 +63,17 @@
   also swaps its JS launcher for the native binary, a minor startup optimization). `npm ci` on
   npm 11 now runs with zero warnings; npm 10 ignores the field.
 
+### Documentation
+
+- **README FAQ 8: Express 5 wildcard route params are arrays.** Express 5 delivers a wildcard
+  (splat) param such as `/files/*filepath` as an array of path segments, so a route-level
+  `hppx()` with the default `sources` reduces it (to the last segment under the default
+  `keepLast`) and reports it as pollution, even for a single segment, and `strict: true` rejects
+  every request on a required wildcard route with 400. The entry documents the workaround
+  (`sources: ["query", "body"]` on wildcard routes) and why a global `app.use(hppx())` leaves the
+  splat untouched, including for later route-level instances on the same request. No behavior
+  change.
+
 ## v0.2.9 — Polluted-tree hardening, combine stack-safety & coverage (2026-06-30)
 
 Security hardening, two bug fixes, expanded test coverage, tooling repair, and
