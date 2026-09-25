@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.4.0 — Read-only DANGEROUS_KEYS, frozen-prototype support & trusted publishing (2026-09-25)
+
+A minor release because the exported `DANGEROUS_KEYS` is now read-only: code that called
+`add`, `delete` or `clear` on it now gets a `TypeError`, and its type is `ReadonlySet<string>`.
+It also fixes requests failing when `Object.prototype` is frozen, and moves publishing to npm
+trusted publishing. No other API changes.
+
+### Breaking
+
+- **`DANGEROUS_KEYS` is read-only.** Every guard used to read the exported, mutable `Set`, so
+  any code in the process could remove `__proto__`, `prototype` or `constructor` from the
+  checks (for example `DANGEROUS_KEYS.delete("constructor")` let a `constructor` key through as
+  an own property of the output) or add keys to them. The guards now read a private set, and the
+  export is a frozen read-only copy: still a plain `Set` (same prototype, so `instanceof Set`,
+  `has`, `size`, iteration and deep equality with another `Set` are unchanged), but `add`,
+  `delete` and `clear` throw `TypeError: DANGEROUS_KEYS is read-only` (`src/index.ts`,
+  `BLOCKED_KEYS`, `readOnlySetOf`).
+
+### Fixed
+
+- **Keys named like an `Object.prototype` member no longer fail the request when
+  `Object.prototype` is frozen.** hppx built its output objects with plain assignment, which
+  consults the prototype chain: once `Object.freeze(Object.prototype)` had run (a common
+  prototype-pollution mitigation), `?toString=1`, `?valueOf=a&valueOf=b` or
+  `user[hasOwnProperty]=1` threw `TypeError: Cannot assign to read only property`, which Express
+  turned into a 500 for every such request. For the same reason an inherited setter received the
+  value instead of an own property being created. Every write into an object hppx builds now
+  goes through `defineOwn`, which defines an own data property when the name is inherited and
+  keeps plain assignment otherwise (`src/index.ts`, `assignExpanded`, `setInExpanded`,
+  `safeDeepClone`, `setIn`, `detectAndReduce`). Measured overhead on 3,000 to 4,000-key payloads
+  is within about 7%. Node's own `--frozen-intrinsics` mode was not affected, because it keeps
+  inherited names overridable. This covers hppx's own processing: Express's `extended` query
+  parser (`qs`) makes the same assignment itself, so under a frozen prototype it still fails
+  before hppx runs; the default `simple` parser does not.
+
+### Release process
+
+- **Publishing uses npm trusted publishing (OIDC).** The `NPM_TOKEN` secret is gone; npm
+  exchanges the workflow's OIDC token for a short-lived publish token and provenance is signed
+  as before (`.github/workflows/release.yml`).
+- **The job that can publish never runs dependency code.** `release.yml` is split into `build`
+  (every gate through `npm run verify`, which now includes `format:check`, then `npm pack`),
+  `publish` (the only job with `id-token: write`: it downloads the packed tarball, checks its
+  sha512 against the build job and publishes that file, so no package scripts run) and
+  `github-release` (waits until the registry serves the same integrity, then creates the GitHub
+  Release with `gh`).
+- **A release run must be for a `vX.Y.Z` tag on `main`.** The tag must point at a commit on
+  `main`, and a manual run must be started on the tag itself (the old option of publishing from
+  the default branch is gone), so npm's provenance always names the release tag and its commit.
+  This guards against mistakes. It does not stop someone who can push a modified `release.yml`
+  with a new tag; only a trusted publisher bound to a protected GitHub environment, or staged
+  publishing, would.
+- **Workflow hardening.** In `release.yml` permissions default to none and each job requests
+  only what it uses; every `permissions:` block says why; every action is pinned to a full commit SHA; checkouts do
+  not persist credentials; the release build uses no dependency cache; workflow inputs reach
+  scripts only through environment variables; the third-party release action is replaced by the
+  preinstalled `gh`; CI and CodeQL cancel superseded pull-request runs and never cancel or queue
+  any other run. `actionlint` 1.7.12 and
+  `zizmor` 1.30.1 (default persona) report no findings.
+- `scripts/release-tag.mjs` describes the new pipeline in its help text.
+
+### Tests
+
+- 6 new tests, 325 in total across 11 suites, in `tests/hppx.security.test.ts`: "DANGEROUS_KEYS
+  is read-only and cannot weaken the guards" and "writes into hppx-built objects define own
+  properties" (a read-only inherited name and an inherited setter, through `sanitize()`, the
+  middleware, dotted keys, polluted-tree recording and stacked whitelist restoration). Each was
+  observed failing before the fix. Each write site and both `DANGEROUS_KEYS` mechanisms were
+  reverted once to confirm a test turns red; reverting the write that replaces an existing own
+  key changes nothing, because such a write never consults the prototype chain.
+- Coverage floor raised to 99.76% statements and 95.94% branches in `jest.config.ts`.
+
+### Verified
+
+- `npm run verify`: all 7 gates pass on Node 24.19.0 and Node 18.20.8; `npm test`: 325/325;
+  `npm audit`: 0 vulnerabilities.
+- CodeQL 2.27.1 `security-and-quality` suite, run locally on the release tree: 0 results.
+- A real `Object.freeze(Object.prototype)` with Express 5: `?toString=1` returns 200 with
+  `{"toString":"1"}` (500 before).
+
 ## v0.3.1 — CodeQL prototype-polluting-assignment fixes (2026-09-25)
 
 Resolves the two CodeQL `js/prototype-polluting-assignment` alerts (code scanning #5 and #6)

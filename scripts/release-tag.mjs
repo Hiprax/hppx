@@ -38,10 +38,13 @@ Options:
 
 This must be run AFTER your release PR has been merged into main.
 The tag push triggers the release workflow on CI which:
-  - Re-runs all quality gates
+  - Verifies the tag points at a commit on main
+  - Re-runs all quality gates (npm run verify)
   - Verifies tag === package.json version
-  - Publishes to npm with provenance
-  - Creates a GitHub Release with the CHANGELOG section as body
+  - Publishes the packed tarball to npm with provenance through trusted
+    publishing (OIDC; no npm token exists)
+  - Creates a GitHub Release with the CHANGELOG section as body, once the
+    registry serves the published tarball
 `;
 
 main(async () => {

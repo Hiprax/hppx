@@ -66,7 +66,54 @@ export interface SanitizedResult<T> {
 
 const DEFAULT_SOURCES: RequestSource[] = ["query", "body", "params"];
 const DEFAULT_STRATEGY: MergeStrategy = "keepLast";
-const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+/**
+ * Keys that are never written, at any depth. Every guard reads this private
+ * set, so no other code in the process can weaken them; the exported
+ * `DANGEROUS_KEYS` is a read-only copy for inspection.
+ */
+const BLOCKED_KEYS: ReadonlySet<string> = new Set(["__proto__", "prototype", "constructor"]);
+
+/**
+ * A frozen, plain `Set` copy of `keys` whose `add`, `delete` and `clear` are
+ * own methods that throw. It stays a plain `Set` (same prototype), so
+ * `instanceof`, iteration and deep equality with another `Set` behave as before.
+ */
+function readOnlySetOf(keys: Iterable<string>): ReadonlySet<string> {
+  const set = new Set(keys);
+  const reject = (): never => {
+    throw new TypeError("DANGEROUS_KEYS is read-only");
+  };
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, { value: reject });
+  }
+  return Object.freeze(set);
+}
+
+const DANGEROUS_KEYS: ReadonlySet<string> = readOnlySetOf(BLOCKED_KEYS);
+
+/**
+ * Writes `value` as an own, enumerable, writable data property, as `JSON.parse`
+ * and object spread do. Every write into an object hppx builds goes through
+ * here. Plain assignment to a name the object only inherits consults the
+ * prototype chain: it throws when that property is read-only (the "override
+ * mistake", for example `?toString=1` once `Object.freeze(Object.prototype)`
+ * has run) and calls an inherited setter instead of creating the property, so
+ * such names are defined explicitly. For any other name assignment is
+ * equivalent and several times faster than `Object.defineProperty`.
+ */
+function defineOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (key in target && !Object.prototype.hasOwnProperty.call(target, key)) {
+    Object.defineProperty(target, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  } else {
+    target[key] = value;
+  }
+}
 
 // Pre-compiled, ReDoS-safe character class that rejects keys containing any of:
 //   - ASCII C0 controls (U+0000..U+001F) and DEL (U+007F)
@@ -91,7 +138,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function sanitizeKey(key: string, maxKeyLength?: number): string | null {
   /* istanbul ignore next */ if (typeof key !== "string") return null;
-  if (DANGEROUS_KEYS.has(key)) return null;
+  if (BLOCKED_KEYS.has(key)) return null;
   // Reject keys containing ASCII/Unicode control characters or bidirectional
   // override characters. Subsumes the previous explicit NUL-byte check.
   if (FORBIDDEN_KEY_CHARS.test(key)) return null;
@@ -133,7 +180,7 @@ const pathSegmentCache = new Map<string, string[]>();
  *
  *   2. Lenient parsing is acceptable defense-in-depth: even if an attacker
  *      crafts unusual bracket placement, every parsed segment is checked
- *      against `DANGEROUS_KEYS` when it is written (by `setInExpanded` for
+ *      against the blocked keys (`BLOCKED_KEYS`) when it is written (by `setInExpanded` for
  *      intermediate segments and `assignExpanded` for the leaf, the same
  *      guard `setIn` applies to the paths it writes); segments are not re-run
  *      through `sanitizeKey`. Different spellings that parse to the same path
@@ -271,11 +318,11 @@ function assignExpanded(
   value: unknown,
   owned: WeakSet<unknown[]>,
 ): void {
-  if (DANGEROUS_KEYS.has(key)) return;
+  if (BLOCKED_KEYS.has(key)) return;
   if (Object.prototype.hasOwnProperty.call(target, key)) {
-    target[key] = mergeExpandedValue(target[key], value, owned);
+    defineOwn(target, key, mergeExpandedValue(target[key], value, owned));
   } else {
-    target[key] = value;
+    defineOwn(target, key, value);
   }
 }
 
@@ -295,9 +342,9 @@ function setInExpanded(
   let cur: Record<string, unknown> = target;
   for (let i = 0; i < path.length - 1; i++) {
     const k = path[i]!;
-    if (DANGEROUS_KEYS.has(k)) return;
+    if (BLOCKED_KEYS.has(k)) return;
     if (!Object.prototype.hasOwnProperty.call(cur, k) || !isPlainObject(cur[k])) {
-      cur[k] = {};
+      defineOwn(cur, k, {});
     }
     cur = cur[k] as Record<string, unknown>;
   }
@@ -476,13 +523,17 @@ function safeDeepClone<T>(
       const out: Record<string, unknown> = {};
       for (const k of Object.keys(input)) {
         if (!sanitizeKey(k, maxKeyLength)) continue;
-        out[k] = safeDeepClone(
-          (input as Record<string, unknown>)[k],
-          maxKeyLength,
-          maxArrayLength,
-          maxDepth,
-          currentDepth + 1,
-          seenSet,
+        defineOwn(
+          out,
+          k,
+          safeDeepClone(
+            (input as Record<string, unknown>)[k],
+            maxKeyLength,
+            maxArrayLength,
+            maxDepth,
+            currentDepth + 1,
+            seenSet,
+          ),
         );
       }
       return out as T;
@@ -610,21 +661,21 @@ function setIn(target: Record<string, unknown>, path: string[], value: unknown):
   for (let i = 0; i < path.length - 1; i++) {
     const k = path[i]!;
     // Additional prototype pollution protection
-    if (DANGEROUS_KEYS.has(k)) return;
+    if (BLOCKED_KEYS.has(k)) return;
     // Descend only into an OWN plain object (same rule as setInExpanded): an
     // inherited one, such as a plain object planted on Object.prototype by
     // pollution elsewhere in the process, is shared by every object, and
     // writing into it would spread request data process-wide.
     if (!Object.prototype.hasOwnProperty.call(cur, k) || !isPlainObject(cur[k])) {
       // Create a new plain object to avoid pollution
-      cur[k] = {};
+      defineOwn(cur, k, {});
     }
     cur = cur[k] as Record<string, unknown>;
   }
   const lastKey = path[path.length - 1]!;
   // Final check on the last key
-  if (DANGEROUS_KEYS.has(lastKey)) return;
-  cur[lastKey] = value;
+  if (BLOCKED_KEYS.has(lastKey)) return;
+  defineOwn(cur, lastKey, value);
 }
 
 function moveWhitelistedFromPolluted(
@@ -758,7 +809,7 @@ function detectAndReduce(
         // path under which a new array site can record pollution exactly once.
         let value = processNode(child, childPath, depth + 1, false);
         if (typeof value === "string" && opts.trimValues) value = value.trim();
-        out[safeKey] = value;
+        defineOwn(out, safeKey, value);
       }
       return out;
     }
