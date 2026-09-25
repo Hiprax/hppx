@@ -1,6 +1,6 @@
 {
   "name": "hppx",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
   "license": "MIT",
   "author": "Hiprax",
@@ -46,12 +46,12 @@
     "dev": "tsup --watch",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "test:watch": "jest --watch",
+    "test:watch": "jest --watch --coverage=false",
     "prepare": "npm run build && npm run check-dts",
     "check-dts": "node scripts/check-dts-parity.mjs",
     "check-types-pack": "attw --pack .",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "verify": "node scripts/verify.mjs",
@@ -99,6 +99,14 @@
     "qs": "^6.15.3",
     "js-yaml": "^3.15.0",
     "@babel/core": "^7.29.7",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "test-exclude": {
+      "glob": "^13.0.6"
+    }
+  },
+  "allowScripts": {
+    "@parcel/watcher": false,
+    "esbuild": false,
+    "unrs-resolver": false
   }
 }

@@ -1,5 +1,114 @@
 # Changelog
 
+## v0.3.0 — Alternate-syntax duplicate detection, NaN-safe limits & dependency refresh (2026-09-25)
+
+Two security fixes, two middleware fixes, and a dev-dependency refresh. Both security fixes
+change observable behavior, so this is a minor release: a `^0.2.x` range does not pick it up.
+`hppx()` now throws a `TypeError` when it is created, and `sanitize()` when it is called, for
+`NaN` limits, which were silently accepted. A parameter duplicated through an alternate key
+spelling is now detected as pollution, except where a structural conflict replaces the earlier
+value (see Security): it appears in `req.*Polluted`, `onPollutionDetected` and the log line,
+`keepFirst`, `combine` and `whitelist` apply to it, and `strict: true` responds with 400. With
+the default `keepLast`, without `strict` and without a `whitelist` entry, such scalar
+duplicates keep the cleaned value they had before and only gain the pollution signals, with
+two exceptions that match how exact duplicates already behave: `maxArrayLength` truncates the
+combined array before reduction, so `keepLast` can keep an earlier spelling; and a nested
+duplicate whose path is exactly `maxDepth + 1` keys long now fails with the depth error. Some
+unusual JSON inputs also reduce differently: `{ "a": "x", "a.": [] }` now keeps `"x"`, where
+the empty array used to replace it and reduce to `undefined`. Opt-outs: whitelist a key to keep
+its values as an array, or run without `strict`. Plain nested objects reached through mixed
+spellings are now merged instead of the later one replacing the earlier. No new options or
+exports.
+
+### Security
+
+- **Numeric limits now reject `NaN` at construction.** `hppx()` and `sanitize()` throw the
+  existing `TypeError` (messages unchanged) when `maxDepth`, `maxKeys`, `maxArrayLength` or
+  `maxKeyLength` is `NaN`, for example from `Number(undefined)` on an unset setting. Previously
+  `NaN` was accepted: it silently disabled the `maxDepth`, `maxKeys` and `maxKeyLength` checks,
+  and `maxArrayLength: NaN` truncated every array-valued parameter to nothing (`undefined`
+  under `keepFirst`/`keepLast`, `[]` under `combine`). `Infinity` stays accepted for
+  `maxKeys` and `maxArrayLength` and stays rejected for `maxDepth` and `maxKeyLength`
+  (`src/index.ts`, `validateSanitizeOptions`).
+- **Parameters duplicated through alternate key spellings are now detected as pollution.** Keys
+  that expand to the same path (`a`, `a[]`, `a.` and `[a]`; `a.b` and `a[b]`, including a nested
+  object next to a dotted spelling of its leaf) used to overwrite each other during key
+  expansion, so `?a=1&a[]=2` (Express 5's default `"simple"` query parser) or
+  `?user.role=user&user[role]=admin` (either parser) reached the route as a single value with no
+  pollution signal and passed `strict` mode. They are now combined into one array in key order:
+  `strict: true` rejects them with 400, they appear in `req.*Polluted`, `onPollutionDetected`
+  and the log line, and `mergeStrategy` and `whitelist` apply to them. For scalar duplicates the
+  value kept by the default `keepLast` is unchanged, with two exceptions: `maxArrayLength`
+  truncates the combined array, so the last spelling can be cut off; and a nested duplicate
+  whose path is exactly `maxDepth + 1` keys long now fails with the depth error, because the
+  combined array there exceeds `maxDepth` (an exact duplicate there already did). Structural
+  conflicts are unchanged: when one spelling nests keys under a parameter (`a.x`) and another
+  assigns the parameter itself a value (`a`), the last-processed shape still wins and the
+  conflict itself is not reported, so a value it replaces is not combined with later spellings
+  of the same key. The fix covers both `hppx()` and `sanitize()`, and never mutates the caller's
+  arrays or objects (`src/index.ts`, `expandObjectPaths` and its new internal write helpers).
+
+### Fixed
+
+- **Stacked `hppx()` instances no longer re-expand an already-processed source.** A subsequent
+  instance (for example a router-level one behind a global one) now only restores its
+  `whitelist`, as the documented option precedence states. Previously it still ran a full key
+  expansion of the cleaned source and discarded the result: wasted work on every extra
+  instance, and a subsequent instance with a tighter `maxDepth` threw
+  `Maximum object depth (N) exceeded` on deep input, turning a valid request into an error
+  even though `maxDepth` is documented as ignored there (`src/index.ts`, `hppx`).
+- **The query string is parsed once per request under Express 5.** Express 5's `req.query` is
+  a getter that re-runs the query parser on every read; the middleware read it twice before
+  sanitizing, so every request paid for two parses (and a custom query parser ran twice). Each
+  source is now read once (`src/index.ts`, `hppx`).
+
+### Changed
+
+- Plain nested objects reached through mixed spellings of the same key are now merged instead of
+  the later one replacing the earlier, so a later spelling no longer drops keys that only the
+  earlier one set: `{ "a.b": "1", a: { c: "2" } }` now gives `{ a: { b: "1", c: "2" } }`
+  (previously `{ a: { c: "2" } }`). Structural conflicts, where only one side is an object, keep
+  last-processed-wins: `{ a: "1", "a.b": "2" }` still gives `{ a: { b: "2" } }`.
+- Refreshed dev dependencies within their existing ranges (`npm audit fix`, `npm update`),
+  clearing every `npm audit` advisory (7 dev-only: `baseline-browser-mapping`, `body-parser`,
+  `brace-expansion`, `browserslist`, `fflate`, `js-yaml`, `qs`) and every install
+  deprecation (`glob@7`, `glob@10`, `inflight`). A nested `overrides` entry
+  (`"test-exclude": { "glob": "^13.0.6" }`) moves `test-exclude@7` onto the maintained
+  `glob` line. No runtime impact: the package has zero runtime dependencies.
+- Added an explicit `allowScripts` policy to `package.json` that denies the install scripts of
+  `@parcel/watcher`, `esbuild` and `unrs-resolver`. The prebuilt platform packages are installed
+  as optional dependencies, so these scripts only act as fallbacks when one is missing (esbuild's
+  also swaps its JS launcher for the native binary, a minor startup optimization). `npm ci` on
+  npm 11 now runs with zero warnings; npm 10 ignores the field.
+
+### Documentation
+
+- **README FAQ 8: Express 5 wildcard route params are arrays.** Express 5 delivers a wildcard
+  (splat) param such as `/files/*filepath` as an array of path segments, so a route-level
+  `hppx()` with the default `sources` reduces it (to the last segment under the default
+  `keepLast`) and reports it as pollution, even for a single segment, and `strict: true` rejects
+  every request on a required wildcard route with 400. The entry documents the workaround
+  (`sources: ["query", "body"]` on wildcard routes) and why a global `app.use(hppx())` leaves the
+  splat untouched, including for later route-level instances on the same request. No behavior
+  change.
+- **README FAQ 9: keys that normalize to the same path are duplicates.** Documents how
+  alternate spellings are combined, reduced, reported and rejected in strict mode, that a
+  `whitelist` entry keeps the combined array, the parser-order note, the `maxArrayLength` and
+  `maxDepth + 1` exceptions, plain-object merging, and structural conflicts. The security table
+  gains an "Alternate-syntax duplicates" row, the limits table notes that `NaN` and non-number
+  limits throw a `TypeError`, and FAQ 4 shows the BOM as the `\uFEFF` escape instead of an
+  invisible literal character.
+
+### Verified
+
+- `npm run verify`: all 7 gates pass (build, `check-dts` with 11 matching symbols,
+  `check-types-pack`, typecheck, lint with 0 warnings (enforced by `--max-warnings 0`),
+  `format:check`, test) on Node 24.19.0 and on Node 18.20.8.
+- `npm test`: 310/310 passing across 11 suites; coverage 99.75% stmts, 95.84% branches,
+  100% funcs/lines, now enforced as a floor by `coverageThreshold` in `jest.config.ts`.
+- `npm audit`: 0 vulnerabilities.
+- `npm ci` on npm 11: zero `npm warn` lines.
+
 ## v0.2.9 — Polluted-tree hardening, combine stack-safety & coverage (2026-06-30)
 
 Security hardening, two bug fixes, expanded test coverage, tooling repair, and

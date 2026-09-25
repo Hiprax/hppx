@@ -132,9 +132,16 @@ const pathSegmentCache = new Map<string, string[]>();
  *      strings. The remaining surface is benign syntactic noise.
  *
  *   2. Lenient parsing is acceptable defense-in-depth: even if an attacker
- *      crafts unusual bracket placement, the parsed segments are still
- *      passed through `sanitizeKey` again at every level by `setIn`, which
- *      blocks dangerous keys at the segment level too.
+ *      crafts unusual bracket placement, every parsed segment is checked
+ *      against `DANGEROUS_KEYS` when it is written (by `setInExpanded` for
+ *      intermediate segments and `assignExpanded` for the leaf, the same
+ *      guard `setIn` applies to the paths it writes); segments are not re-run
+ *      through `sanitizeKey`. Different spellings that parse to the same path
+ *      (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined as duplicates
+ *      by `expandObjectPaths`. A structural conflict (one spelling nests keys
+ *      under a path that another spelling assigns a value to) still resolves
+ *      last-processed-wins, so a value it overwrites is not combined with
+ *      later spellings of that path.
  *
  *   3. Strict grammar enforcement here would be a behavioral change that
  *      could break legitimate users with unusual key shapes, while
@@ -173,12 +180,137 @@ export function __resetPathSegmentCache(): void {
   pathSegmentCache.clear();
 }
 
+/**
+ * Appends `value` to `out`, flattened one level: the elements of an array are
+ * pushed one at a time (a loop, never a spread, so a huge array cannot overflow
+ * the call stack), any other value is pushed as-is.
+ */
+function pushFlat(out: unknown[], value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const el of value) out.push(el);
+  } else {
+    out.push(value);
+  }
+}
+
+/**
+ * Merges every own key of `source` into `target`; both are plain objects built
+ * by key expansion. A key that holds a plain object on both sides is merged one
+ * level down; every other key goes through `assignExpanded`, so each write stays
+ * guarded and same-leaf duplicates are combined.
+ *
+ * Iterative on purpose (explicit work stack, no recursion): the overlap of two
+ * expanded trees can be far deeper than `maxDepth`, because a single dotted key
+ * adds one level per segment, and `maxDepth` is only enforced afterwards by
+ * `safeDeepClone`. A recursive merge would overflow the call stack first.
+ */
+function mergePlainInto(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  owned: WeakSet<unknown[]>,
+): void {
+  const stack: [Record<string, unknown>, Record<string, unknown>][] = [[target, source]];
+  while (stack.length > 0) {
+    const [t, s] = stack.pop()!;
+    for (const k of Object.keys(s)) {
+      const incoming = s[k];
+      const existing = Object.prototype.hasOwnProperty.call(t, k) ? t[k] : undefined;
+      if (isPlainObject(existing) && isPlainObject(incoming)) {
+        stack.push([existing, incoming]);
+      } else {
+        assignExpanded(t, k, incoming, owned);
+      }
+    }
+  }
+}
+
+/**
+ * Resolves a write of `incoming` to a key that already holds `existing` in an
+ * expansion result:
+ *   - both plain objects: `incoming` is merged into `existing` (`mergePlainInto`);
+ *   - exactly one plain object: a structural conflict, the last-processed value
+ *     (`incoming`) wins;
+ *   - neither: the same leaf was spelled twice (`a` / `a[]` / `a.` / `[a]`), so
+ *     both values are kept, each flattened one level, in an array that
+ *     `detectAndReduce` then reports as pollution.
+ *
+ * `existing` may alias caller-owned data (expansion passes non-plain values
+ * through by reference), so the first collision at a leaf builds a NEW array and
+ * records it in `owned`; later collisions at that leaf append to it in place,
+ * which keeps many colliding spellings linear instead of quadratic.
+ */
+function mergeExpandedValue(
+  existing: unknown,
+  incoming: unknown,
+  owned: WeakSet<unknown[]>,
+): unknown {
+  if (isPlainObject(existing) && isPlainObject(incoming)) {
+    mergePlainInto(existing, incoming, owned);
+    return existing;
+  }
+  if (isPlainObject(existing) || isPlainObject(incoming)) return incoming;
+  if (Array.isArray(existing) && owned.has(existing)) {
+    pushFlat(existing, incoming);
+    return existing;
+  }
+  const out: unknown[] = [];
+  pushFlat(out, existing);
+  pushFlat(out, incoming);
+  owned.add(out);
+  return out;
+}
+
+/**
+ * Writes `value` at `key` of an expansion result. Dangerous keys are dropped.
+ * Only an OWN property counts as a collision (resolved by `mergeExpandedValue`);
+ * inherited names such as `toString` are plain writes.
+ */
+function assignExpanded(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  owned: WeakSet<unknown[]>,
+): void {
+  if (DANGEROUS_KEYS.has(key)) return;
+  if (Object.prototype.hasOwnProperty.call(target, key)) {
+    target[key] = mergeExpandedValue(target[key], value, owned);
+  } else {
+    target[key] = value;
+  }
+}
+
+/**
+ * Expansion-path counterpart of `setIn`. Intermediate segments are walked with
+ * the same rules (a dangerous segment aborts the write; a segment that is not an
+ * own plain object becomes a fresh `{}`), then the leaf is handed to
+ * `assignExpanded`, which guards it and combines same-leaf duplicates instead of
+ * overwriting them. Callers guarantee a non-empty `path`.
+ */
+function setInExpanded(
+  target: Record<string, unknown>,
+  path: string[],
+  value: unknown,
+  owned: WeakSet<unknown[]>,
+): void {
+  let cur: Record<string, unknown> = target;
+  for (let i = 0; i < path.length - 1; i++) {
+    const k = path[i]!;
+    if (DANGEROUS_KEYS.has(k)) return;
+    if (!Object.prototype.hasOwnProperty.call(cur, k) || !isPlainObject(cur[k])) {
+      cur[k] = {};
+    }
+    cur = cur[k] as Record<string, unknown>;
+  }
+  assignExpanded(cur, path[path.length - 1]!, value, owned);
+}
+
 function expandObjectPaths(
   obj: Record<string, unknown>,
   maxKeyLength?: number,
   maxDepth = 20,
   currentDepth = 0,
   seen?: WeakSet<object>,
+  owned: WeakSet<unknown[]> = new WeakSet<unknown[]>(),
 ): Record<string, unknown> {
   if (currentDepth > maxDepth) {
     throw new Error(`Maximum object depth (${maxDepth}) exceeded`);
@@ -204,17 +336,18 @@ function expandObjectPaths(
             maxDepth,
             currentDepth + 1,
             seenSet,
+            owned,
           )
         : value;
 
       if (safeKey.includes(".") || safeKey.includes("[")) {
         const segments = parsePathSegments(safeKey);
         if (segments.length > 0) {
-          setIn(result, segments, expandedValue);
+          setInExpanded(result, segments, expandedValue, owned);
           continue;
         }
       }
-      result[safeKey] = expandedValue;
+      assignExpanded(result, safeKey, expandedValue, owned);
     }
     return result;
   } finally {
@@ -677,25 +810,31 @@ type ExpressLikeNext = (err?: unknown) => void;
 function validateSanitizeOptions(options: SanitizeOptions): void {
   if (
     options.maxDepth !== undefined &&
-    (typeof options.maxDepth !== "number" || options.maxDepth < 1 || options.maxDepth > 100)
+    (typeof options.maxDepth !== "number" ||
+      Number.isNaN(options.maxDepth) ||
+      options.maxDepth < 1 ||
+      options.maxDepth > 100)
   ) {
     throw new TypeError("maxDepth must be a number between 1 and 100");
   }
   if (
     options.maxKeys !== undefined &&
-    (typeof options.maxKeys !== "number" || options.maxKeys < 1)
+    (typeof options.maxKeys !== "number" || Number.isNaN(options.maxKeys) || options.maxKeys < 1)
   ) {
     throw new TypeError("maxKeys must be a positive number");
   }
   if (
     options.maxArrayLength !== undefined &&
-    (typeof options.maxArrayLength !== "number" || options.maxArrayLength < 1)
+    (typeof options.maxArrayLength !== "number" ||
+      Number.isNaN(options.maxArrayLength) ||
+      options.maxArrayLength < 1)
   ) {
     throw new TypeError("maxArrayLength must be a positive number");
   }
   if (
     options.maxKeyLength !== undefined &&
     (typeof options.maxKeyLength !== "number" ||
+      Number.isNaN(options.maxKeyLength) ||
       options.maxKeyLength < 1 ||
       options.maxKeyLength > 1000)
   ) {
@@ -855,18 +994,17 @@ export default function hppx(options: HppxOptions = {}) {
            degrades gracefully if a non-Express harness invokes the middleware
            with a missing/non-object req. */
         if (!req || typeof req !== "object") break;
-        if (req[source] === undefined) continue;
+        // Read the source exactly once before sanitizing: Express 5 exposes
+        // `req.query` as a getter that re-runs the query parser on every access.
+        const part = req[source];
+        if (part === undefined) continue;
 
         if (source === "body") {
           if (checkBodyContentType === "none") continue;
           if (checkBodyContentType === "urlencoded" && !isUrlEncodedContentType(req)) continue;
         }
 
-        const part = req[source];
         if (!isPlainObject(part)) continue;
-
-        // Preprocess: expand dotted and bracketed keys into nested objects
-        const expandedPart = expandObjectPaths(part, maxKeyLength, maxDepth);
 
         const pollutedKey = `${source}Polluted`;
         const processedKey = `__hppxProcessed_${source}`;
@@ -875,6 +1013,11 @@ export default function hppx(options: HppxOptions = {}) {
         const hasProcessedBefore = Object.prototype.hasOwnProperty.call(req, processedKey);
 
         if (!hasProcessedBefore) {
+          // Preprocess: expand dotted and bracketed keys into nested objects. Only the
+          // first pass expands: subsequent instances ignore maxDepth/maxKeyLength
+          // (documented option precedence) and only restore their whitelist.
+          const expandedPart = expandObjectPaths(part, maxKeyLength, maxDepth);
+
           // First pass for this request part: reduce arrays and collect polluted
           const { cleaned, pollutedTree, pollutedKeys } = detectAndReduce(expandedPart, {
             mergeStrategy,

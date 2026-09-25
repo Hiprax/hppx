@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import hppx, { sanitize } from "../src/index";
+import hppx, { sanitize, type HppxOptions } from "../src/index";
 
 describe("hppx - Security Features", () => {
   describe("Array length limits (DoS protection)", () => {
@@ -355,6 +355,156 @@ describe("hppx - Security Features", () => {
       expect(() => hppx({ sources: [] })).toThrow(/at least one/);
     });
 
+    // Calls `construct`, requires the exact documented TypeError, and requires that nothing was
+    // produced: no middleware function from hppx(), no cleaned object from sanitize().
+    function expectRejected(construct: () => unknown, message: string): void {
+      let produced: unknown;
+      let thrown: unknown;
+      try {
+        produced = construct();
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toBe(message);
+      // Reports a returned value (instead of only "no throw") if construction ever stops failing.
+      expect(produced).toBeUndefined();
+    }
+
+    const DEPTH_MESSAGE = "maxDepth must be a number between 1 and 100";
+    const KEYS_MESSAGE = "maxKeys must be a positive number";
+    const ARRAY_MESSAGE = "maxArrayLength must be a positive number";
+    const KEY_LENGTH_MESSAGE = "maxKeyLength must be a number between 1 and 1000";
+
+    const nanCases: { option: string; options: HppxOptions; message: string }[] = [
+      { option: "maxDepth", options: { maxDepth: NaN }, message: DEPTH_MESSAGE },
+      { option: "maxKeys", options: { maxKeys: NaN }, message: KEYS_MESSAGE },
+      { option: "maxArrayLength", options: { maxArrayLength: NaN }, message: ARRAY_MESSAGE },
+      { option: "maxKeyLength", options: { maxKeyLength: NaN }, message: KEY_LENGTH_MESSAGE },
+    ];
+
+    test.each(nanCases)(
+      "hppx() rejects NaN for $option at construction with the documented TypeError",
+      ({ options, message }) => {
+        expectRejected(() => hppx(options), message);
+      },
+    );
+
+    test.each(nanCases)(
+      "sanitize() rejects NaN for $option with the documented TypeError before processing input",
+      ({ options, message }) => {
+        expectRejected(() => sanitize({ a: ["1", "2"] }, options), message);
+      },
+    );
+
+    test("rejects NaN produced by numeric parsing of an unset or empty setting (maxArrayLength)", () => {
+      expectRejected(() => hppx({ maxArrayLength: Number(undefined) }), ARRAY_MESSAGE);
+      expectRejected(() => hppx({ maxArrayLength: Number.parseInt("", 10) }), ARRAY_MESSAGE);
+      expectRejected(
+        () => sanitize({ x: ["a"] }, { maxArrayLength: Number(undefined) }),
+        ARRAY_MESSAGE,
+      );
+    });
+
+    // `levels` nested single-key objects around a string leaf: nest(2) = { k: { k: "leaf" } }.
+    function nest(levels: number): Record<string, unknown> {
+      let node: unknown = "leaf";
+      for (let i = 0; i < levels; i++) node = { k: node };
+      return node as Record<string, unknown>;
+    }
+
+    function manyKeys(count: number): Record<string, string> {
+      return Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, "v"]));
+    }
+
+    test("maxDepth accepts the documented bounds 1 and 100, and each bound is the one enforced", () => {
+      expect(typeof hppx({ maxDepth: 1 })).toBe("function");
+      expect(typeof hppx({ maxDepth: 100 })).toBe("function");
+
+      expect(sanitize(nest(1), { maxDepth: 1 })).toEqual({ k: "leaf" });
+      expect(() => sanitize(nest(3), { maxDepth: 1 })).toThrow(
+        new Error("Maximum object depth (1) exceeded"),
+      );
+      // Depth 50 is beyond the default (20) yet within 100: accepted only because 100 applies.
+      expect(sanitize(nest(50), { maxDepth: 100 })).toEqual(nest(50));
+      expect(() => sanitize(nest(50))).toThrow(new Error("Maximum object depth (20) exceeded"));
+      expect(() => sanitize(nest(150), { maxDepth: 100 })).toThrow(
+        new Error("Maximum object depth (100) exceeded"),
+      );
+    });
+
+    test("maxDepth rejects 0, 101, Infinity and -Infinity with the documented TypeError", () => {
+      for (const value of [0, 101, Infinity, -Infinity]) {
+        expectRejected(() => hppx({ maxDepth: value }), DEPTH_MESSAGE);
+        expectRejected(() => sanitize({ a: "1" }, { maxDepth: value }), DEPTH_MESSAGE);
+      }
+    });
+
+    test("maxKeyLength accepts the documented bounds 1 and 1000, and each bound is the one enforced", () => {
+      expect(typeof hppx({ maxKeyLength: 1 })).toBe("function");
+      expect(typeof hppx({ maxKeyLength: 1000 })).toBe("function");
+
+      expect(sanitize({ a: "1", ab: "2" }, { maxKeyLength: 1 })).toEqual({ a: "1" });
+      const atLimit = "k".repeat(1000);
+      const overLimit = "j".repeat(1001);
+      const cleaned = sanitize({ [atLimit]: "1", [overLimit]: "2" }, { maxKeyLength: 1000 });
+      expect(cleaned).toEqual({ [atLimit]: "1" });
+      expect(Object.prototype.hasOwnProperty.call(cleaned, overLimit)).toBe(false);
+    });
+
+    test("maxKeyLength rejects 0, 1001, Infinity and -Infinity with the documented TypeError", () => {
+      for (const value of [0, 1001, Infinity, -Infinity]) {
+        expectRejected(() => hppx({ maxKeyLength: value }), KEY_LENGTH_MESSAGE);
+        expectRejected(() => sanitize({ a: "1" }, { maxKeyLength: value }), KEY_LENGTH_MESSAGE);
+      }
+    });
+
+    test("maxKeys accepts 1 and Infinity (documented range >= 1), and the accepted value is enforced", () => {
+      expect(typeof hppx({ maxKeys: 1 })).toBe("function");
+      expect(typeof hppx({ maxKeys: Infinity })).toBe("function");
+
+      expect(sanitize({ a: "1" }, { maxKeys: 1 })).toEqual({ a: "1" });
+      expect(() => sanitize({ a: "1", b: "2" }, { maxKeys: 1 })).toThrow(
+        new Error("Maximum key count (1) exceeded"),
+      );
+      // 6000 keys exceed the default 5000, so this passes only because Infinity is in effect.
+      expect(Object.keys(sanitize(manyKeys(6000), { maxKeys: Infinity }))).toHaveLength(6000);
+      expect(() => sanitize(manyKeys(6000))).toThrow(
+        new Error("Maximum key count (5000) exceeded"),
+      );
+    });
+
+    test("maxKeys rejects 0 and -Infinity with the documented TypeError", () => {
+      for (const value of [0, -Infinity]) {
+        expectRejected(() => hppx({ maxKeys: value }), KEYS_MESSAGE);
+        expectRejected(() => sanitize({ a: "1" }, { maxKeys: value }), KEYS_MESSAGE);
+      }
+    });
+
+    test("maxArrayLength accepts 1 and Infinity (documented range >= 1), and the accepted value is enforced", () => {
+      expect(typeof hppx({ maxArrayLength: 1 })).toBe("function");
+      expect(typeof hppx({ maxArrayLength: Infinity })).toBe("function");
+
+      expect(sanitize({ x: ["a", "b"] }, { maxArrayLength: 1, mergeStrategy: "combine" })).toEqual({
+        x: ["a"],
+      });
+      const large = Array.from({ length: 1500 }, (_, i) => i);
+      // The default (1000) would truncate; Infinity keeps every element.
+      const cleaned = sanitize(
+        { x: large },
+        { maxArrayLength: Infinity, mergeStrategy: "combine" },
+      );
+      expect(cleaned.x).toEqual(large);
+      expect(sanitize({ x: large }, { mergeStrategy: "combine" }).x).toHaveLength(1000);
+    });
+
+    test("maxArrayLength rejects 0 and -Infinity with the documented TypeError", () => {
+      for (const value of [0, -Infinity]) {
+        expectRejected(() => hppx({ maxArrayLength: value }), ARRAY_MESSAGE);
+        expectRejected(() => sanitize({ a: "1" }, { maxArrayLength: value }), ARRAY_MESSAGE);
+      }
+    });
+
     test("accepts valid options", () => {
       expect(() => hppx({ maxDepth: 10 })).not.toThrow();
       expect(() => hppx({ maxKeys: 100 })).not.toThrow();
@@ -482,7 +632,7 @@ describe("hppx - Security Features", () => {
   });
 
   describe("onPollutionDetected callback throw is swallowed", () => {
-    // These tests exercise the try/catch at src/index.ts:959-978 that silently
+    // These tests exercise the try/catch at src/index.ts:1102-1121 that silently
     // discards user-callback errors so they cannot disrupt request processing.
 
     test("non-strict: throwing callback contained; next() called without error; req.queryPolluted populated", () => {
@@ -507,8 +657,8 @@ describe("hppx - Security Features", () => {
     });
 
     test("strict + throwing callback: throw contained; 400 HPP_DETECTED still returned; next not called", () => {
-      // The onPollutionDetected try/catch (src/index.ts:959-978) runs BEFORE the
-      // strict block (src/index.ts:980-987), so a contained throw cannot suppress
+      // The onPollutionDetected try/catch (src/index.ts:1102-1121) runs BEFORE the
+      // strict block (src/index.ts:1123-1130), so a contained throw cannot suppress
       // the strict 400 response.
       const mw = hppx({
         strict: true,
@@ -533,7 +683,7 @@ describe("hppx - Security Features", () => {
   });
 
   describe("strict mode degrades gracefully when res.status is not a function", () => {
-    // Exercises the third operand of the compound condition at src/index.ts:980:
+    // Exercises the third operand of the compound condition at src/index.ts:1123:
     // `strict && res && typeof res.status === "function"`. When res.status is
     // absent (non-Express harness), the condition short-circuits to false and
     // the middleware falls through to next() rather than throwing a TypeError.
