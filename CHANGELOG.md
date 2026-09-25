@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 — Alternate-syntax duplicate detection, NaN-safe limits & dependency refresh (2026-09-24)
+## v0.3.0 — Alternate-syntax duplicate detection, NaN-safe limits & dependency refresh (2026-09-25)
 
 Two security fixes, two middleware fixes, and a dev-dependency refresh. Both security fixes
 change observable behavior, so this is a minor release: a `^0.2.x` range does not pick it up.
