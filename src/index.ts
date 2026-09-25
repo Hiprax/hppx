@@ -527,7 +527,7 @@ function isUrlEncodedContentType(req: any): boolean {
   return ct.startsWith("application/x-www-form-urlencoded");
 }
 
-function shouldExcludePath(path: string | undefined, excludePaths: string[]): boolean {
+function shouldExcludePath(path: string | undefined, excludePaths: readonly string[]): boolean {
   if (!path || excludePaths.length === 0) return false;
   const currentPath = path;
   for (const p of excludePaths) {
@@ -611,7 +611,11 @@ function setIn(target: Record<string, unknown>, path: string[], value: unknown):
     const k = path[i]!;
     // Additional prototype pollution protection
     if (DANGEROUS_KEYS.has(k)) return;
-    if (!isPlainObject(cur[k])) {
+    // Descend only into an OWN plain object (same rule as setInExpanded): an
+    // inherited one, such as a plain object planted on Object.prototype by
+    // pollution elsewhere in the process, is shared by every object, and
+    // writing into it would spread request data process-wide.
+    if (!Object.prototype.hasOwnProperty.call(cur, k) || !isPlainObject(cur[k])) {
       // Create a new plain object to avoid pollution
       cur[k] = {};
     }
@@ -866,6 +870,26 @@ function validateSanitizeOptions(options: SanitizeOptions): void {
   }
 }
 
+/**
+ * Maps a configured source to its canonical literal, or throws. The middleware
+ * uses each source as a computed key on `req` (`req[source]`), so it must only
+ * ever hold one of these three constants, never a string taken from caller
+ * data: a value such as `"__proto__"` would make the middleware read and write
+ * a prototype object instead of a request part.
+ */
+function toRequestSource(value: unknown): RequestSource {
+  switch (value) {
+    case "query":
+      return "query";
+    case "body":
+      return "body";
+    case "params":
+      return "params";
+    default:
+      throw new TypeError("sources must only contain 'query', 'body', or 'params'");
+  }
+}
+
 function validateOptions(options: HppxOptions): void {
   validateSanitizeOptions(options);
   if (options.sources !== undefined && !Array.isArray(options.sources)) {
@@ -876,9 +900,7 @@ function validateOptions(options: HppxOptions): void {
       throw new TypeError("sources must contain at least one of 'query', 'body', 'params'");
     }
     for (const source of options.sources) {
-      if (!["query", "body", "params"].includes(source)) {
-        throw new TypeError("sources must only contain 'query', 'body', or 'params'");
-      }
+      toRequestSource(source);
     }
   }
   if (
@@ -938,6 +960,15 @@ export default function hppx(options: HppxOptions = {}) {
 
   const whitelistArr = normalizeWhitelist(whitelist);
   const { isWhitelistedPath } = buildWhitelistHelpers(whitelistArr);
+  // Snapshot the array options now, so every request uses exactly what was
+  // validated above. Neither the caller's arrays nor the exported
+  // DEFAULT_SOURCES are read again: changing them after hppx() returns cannot
+  // bypass validation or alter this middleware. Sources become canonical
+  // literals (and an invalid entry in a modified DEFAULT_SOURCES throws here).
+  const activeSources: readonly RequestSource[] = Object.freeze(
+    Array.from(sources, toRequestSource),
+  );
+  const activeExcludePaths: readonly string[] = Object.freeze([...excludePaths]);
 
   return function hppxMiddleware(req: any, res: any, next: ExpressLikeNext) {
     try {
@@ -965,7 +996,7 @@ export default function hppx(options: HppxOptions = {}) {
         }
         pathForExclusion = undefined;
       }
-      if (shouldExcludePath(pathForExclusion, excludePaths)) return next();
+      if (shouldExcludePath(pathForExclusion, activeExcludePaths)) return next();
 
       let anyPollutionDetected = false;
       const allPollutedKeys: string[] = [];
@@ -988,7 +1019,7 @@ export default function hppx(options: HppxOptions = {}) {
         }
       };
 
-      for (const source of sources) {
+      for (const source of activeSources) {
         /* istanbul ignore next -- defensive: Express always invokes middleware
            with a non-null request object; this guard exists only so the loop
            degrades gracefully if a non-Express harness invokes the middleware
@@ -1101,7 +1132,7 @@ export default function hppx(options: HppxOptions = {}) {
         if (onPollutionDetected) {
           try {
             // Determine which sources had pollution
-            for (const source of sources) {
+            for (const source of activeSources) {
               const pollutedKey = `${source}Polluted`;
               const pollutedData = req[pollutedKey];
               if (pollutedData && Object.keys(pollutedData).length > 0) {

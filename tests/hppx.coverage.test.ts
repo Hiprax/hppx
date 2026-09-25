@@ -538,6 +538,61 @@ describe("hppx - Coverage for Edge Cases", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ query: { a: { b: "1" } }, aProtoIsObjectPrototype: true });
     });
+
+    describe("a plain object inherited from Object.prototype is never written into", () => {
+      // Simulates prototype pollution planted elsewhere in the process: a plain
+      // object reachable from every object. Descending into it would copy
+      // request data into state shared by the whole process, so hppx must build
+      // its own subtree instead, both when it records the polluted tree and
+      // when it restores whitelisted entries.
+      let planted: Record<string, unknown>;
+      beforeEach(() => {
+        planted = {};
+        Object.defineProperty(Object.prototype, "hppxPlanted", {
+          value: planted,
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        });
+      });
+      afterEach(() => {
+        delete (Object.prototype as Record<string, unknown>).hppxPlanted;
+      });
+
+      test("when recording the polluted tree", () => {
+        const mw = hppx({ logPollution: false });
+        const req: any = { headers: {}, query: { hppxPlanted: { tags: ["a", "b"] } } };
+        const next = jest.fn();
+
+        mw(req, {}, next);
+
+        expect(next).toHaveBeenCalledWith();
+        expect(planted).toEqual({});
+        expect(req.query).toEqual({ hppxPlanted: { tags: "b" } });
+        expect(Object.prototype.hasOwnProperty.call(req.queryPolluted, "hppxPlanted")).toBe(true);
+        expect(req.queryPolluted.hppxPlanted).toEqual({ tags: ["a", "b"] });
+      });
+
+      test("when restoring a whitelisted entry in a stacked instance", () => {
+        const first = hppx({ logPollution: false });
+        const second = hppx({ logPollution: false, whitelist: ["hppxPlanted.tags"] });
+        const req: any = { headers: {}, query: { hppxPlanted: { tags: ["a", "b"] } } };
+        const next = jest.fn();
+
+        first(req, {}, next);
+        // An upstream middleware drops the cleaned subtree between the two instances.
+        delete req.query.hppxPlanted;
+        second(req, {}, next);
+
+        expect(next).toHaveBeenCalledTimes(2);
+        expect(next).toHaveBeenNthCalledWith(1);
+        expect(next).toHaveBeenNthCalledWith(2);
+        expect(planted).toEqual({});
+        expect(Object.prototype.hasOwnProperty.call(req.query, "hppxPlanted")).toBe(true);
+        expect(req.query.hppxPlanted).toEqual({ tags: ["a", "b"] });
+        expect(req.queryPolluted).toEqual({});
+      });
+    });
   });
 
   describe("processNode edge cases", () => {
