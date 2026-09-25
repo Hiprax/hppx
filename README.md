@@ -125,7 +125,7 @@ the published types — no extra import is needed.
 
 Creates an Express-compatible middleware. Applies sanitization to each selected source and exposes `*.Polluted` objects on the request.
 
-> **Note:** Invalid options throw a `TypeError` at middleware creation time, not at request time. This ensures misconfiguration is caught early.
+> **Note:** Invalid options throw a `TypeError` at middleware creation time, not at request time. This ensures misconfiguration is caught early. Options are also captured at that point: changing the arrays you passed (`sources`, `excludePaths`, `whitelist`) or the exported `DEFAULT_SOURCES` after `hppx()` returns does not affect that middleware, and an invalid entry added to `DEFAULT_SOURCES` makes later `hppx()` calls that omit `sources` throw.
 
 #### Options
 

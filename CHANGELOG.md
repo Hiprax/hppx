@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.3.1 — CodeQL prototype-polluting-assignment fixes (2026-09-25)
+
+Resolves the two CodeQL `js/prototype-polluting-assignment` alerts (code scanning #5 and #6)
+reported against `setIn` on v0.3.0. Neither was reachable from an HTTP request: `sources` is
+developer configuration, validated when `hppx()` is created. The finding was still right about
+the pattern: the middleware re-read the caller's `sources` array on every request, so an entry
+added after creation, or to the exported `DEFAULT_SOURCES` (which was never validated), was used
+unchecked as a key on `req`. The pattern predates v0.3.0, but the alerts appeared only there:
+v0.3.0 reads each source once (to avoid re-running Express 5's query parser) instead of first
+testing `req[source] === undefined`, and restoring that test on v0.3.0 makes both alerts
+disappear under the same CodeQL version. No API changes.
+
+### Security
+
+- **Middleware configuration is fixed when `hppx()` returns.** `sources` and `excludePaths` are
+  copied into frozen snapshots at creation, and every request uses only those snapshots. Each
+  source is mapped to its canonical literal, so only `"query"`, `"body"` or `"params"` is ever
+  used as a key on `req`. Previously, an entry added to the caller's `sources` array after
+  creation bypassed validation: `"cookies"` made the middleware rewrite `req.cookies`, and on a
+  plain-object `req` (a non-Express harness) `"__proto__"` made it define own `__proto__` and
+  `__proto__Polluted` properties. Changing `DEFAULT_SOURCES` changed every existing middleware
+  created without `sources`, and a non-string added to `excludePaths` made each request whose
+  path reached that entry fail with `TypeError: p.endsWith is not a function`. An invalid entry in
+  a modified `DEFAULT_SOURCES` now makes an `hppx()` call that omits `sources` throw the existing
+  `sources must only contain 'query', 'body', or 'params'` `TypeError` (`src/index.ts`, new
+  `toRequestSource`, `validateOptions`, `hppx`).
+- **`setIn` never writes into an inherited object.** When recording the polluted tree or
+  restoring a whitelisted entry, `setIn` descended into any plain object found at a path
+  segment, including one inherited from `Object.prototype`. If other code in the process had
+  planted a plain object there, the values of a duplicated parameter with the same name were
+  written into that shared object and became visible on every object in the process. `setIn` now
+  descends only into own properties, the rule `setInExpanded` already follows
+  (`src/index.ts`, `setIn`).
+
+### Tests
+
+- 9 new tests, 319 in total across 11 suites: "Configuration is fixed when hppx() returns" in
+  `tests/hppx.security.test.ts` (caller `sources`, `excludePaths` and `whitelist` changed after
+  creation, a `__proto__` source, configured processing order, `DEFAULT_SOURCES` changed before
+  and after creation) and "a plain object inherited from Object.prototype is never written into"
+  in `tests/hppx.coverage.test.ts` (polluted-tree recording and stacked whitelist restoration).
+  The regression tests were observed failing before the fix; the order and `whitelist` pins
+  guard existing behavior. Each part of the fix was reverted once to confirm a test turns red.
+- Branch coverage floor raised from 95.84 to 95.89 in `jest.config.ts` (measured 327/341).
+
+### Verified
+
+- CodeQL 2.27.1 `security-and-quality` suite, run locally on the release tree: 0 results
+  (v0.3.0: the 2 alerts above).
+- `npm run verify`: all 7 gates pass on Node 24.19.0 and Node 18.20.8; `npm test`: 319/319,
+  coverage 99.75% stmts, 95.89% branches, 100% funcs/lines; `npm audit`: 0 vulnerabilities.
+
 ## v0.3.0 — Alternate-syntax duplicate detection, NaN-safe limits & dependency refresh (2026-09-25)
 
 Two security fixes, two middleware fixes, and a dev-dependency refresh. Both security fixes

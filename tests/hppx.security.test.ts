@@ -1,6 +1,11 @@
 import express from "express";
 import request from "supertest";
-import hppx, { sanitize, type HppxOptions } from "../src/index";
+import hppx, {
+  sanitize,
+  DEFAULT_SOURCES,
+  type HppxOptions,
+  type RequestSource,
+} from "../src/index";
 
 describe("hppx - Security Features", () => {
   describe("Array length limits (DoS protection)", () => {
@@ -928,6 +933,134 @@ describe("hppx - Security Features", () => {
 
       // Flag was set (descriptor exists) and is NOT enumerable.
       expect(processedKeyEnumerable).toBe(false);
+    });
+  });
+
+  describe("Configuration is fixed when hppx() returns", () => {
+    // `sources` and `excludePaths` are validated when hppx() is called. The
+    // middleware must act on that validated configuration only: later changes
+    // to the caller's arrays, or to the exported DEFAULT_SOURCES, must neither
+    // bypass validation nor change a middleware that already exists.
+    function run(mw: ReturnType<typeof hppx>, req: Record<string, unknown>) {
+      const next = jest.fn();
+      mw(req, {}, next);
+      return next;
+    }
+
+    test("an entry added to sources after creation never touches that part of req", () => {
+      const sources: RequestSource[] = ["query"];
+      const mw = hppx({ sources, logPollution: false });
+      // Validation rejects "cookies" up front; appending it later must not bypass that.
+      (sources as string[]).push("cookies");
+      const req: any = { headers: {}, query: { a: ["1", "2"] }, cookies: { sid: ["x", "y"] } };
+
+      const next = run(mw, req);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalledWith();
+      expect(req.query).toEqual({ a: "2" });
+      expect(req.queryPolluted).toEqual({ a: ["1", "2"] });
+      expect(req.cookies).toEqual({ sid: ["x", "y"] });
+      expect(Object.prototype.hasOwnProperty.call(req, "cookiesPolluted")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(req, "__hppxProcessed_cookies")).toBe(false);
+    });
+
+    test("a __proto__ entry added to sources after creation never defines req.__proto__", () => {
+      const sources: RequestSource[] = ["query"];
+      const mw = hppx({ sources, logPollution: false });
+      (sources as string[]).push("__proto__");
+      const req: any = { headers: {}, query: { a: ["1", "2"] } };
+
+      const next = run(mw, req);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.query).toEqual({ a: "2" });
+      expect(Object.getPrototypeOf(req)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyNames(req)).not.toContain("__proto__");
+      expect(Object.getOwnPropertyNames(req)).not.toContain("__proto__Polluted");
+    });
+
+    test("sources are processed in the configured order", () => {
+      const seen: string[] = [];
+      const messages: unknown[] = [];
+      const mw = hppx({
+        sources: ["body", "query"],
+        checkBodyContentType: "any",
+        logger: (message) => messages.push(message),
+        onPollutionDetected: (_req, info) => seen.push(info.source),
+      });
+      const req: any = { headers: {}, query: { q: ["1", "2"] }, body: { b: ["3", "4"] } };
+
+      const next = run(mw, req);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(seen).toEqual(["body", "query"]);
+      expect(messages).toEqual([
+        "[hppx] HTTP Parameter Pollution detected - 2 parameter(s) affected: body.b, query.q",
+      ]);
+    });
+
+    test("excludePaths changed after creation neither exempts a path nor breaks requests", () => {
+      const excludePaths = ["/health"];
+      const mw = hppx({ excludePaths, logPollution: false });
+      (excludePaths as unknown[]).push(42, "/api/*");
+      const api: any = { headers: {}, path: "/api/items", query: { a: ["1", "2"] } };
+      const health: any = { headers: {}, path: "/health", query: { a: ["1", "2"] } };
+
+      const apiNext = run(mw, api);
+      const healthNext = run(mw, health);
+
+      expect(apiNext).toHaveBeenCalledTimes(1);
+      expect(apiNext).toHaveBeenCalledWith();
+      expect(api.query).toEqual({ a: "2" });
+      expect(api.queryPolluted).toEqual({ a: ["1", "2"] });
+      // The exclusion configured at creation still applies.
+      expect(healthNext).toHaveBeenCalledWith();
+      expect(health.query).toEqual({ a: ["1", "2"] });
+      expect(Object.prototype.hasOwnProperty.call(health, "queryPolluted")).toBe(false);
+    });
+
+    test("whitelist changed after creation neither adds nor removes a whitelisted key", () => {
+      const whitelist = ["keep"];
+      const mw = hppx({ whitelist, logPollution: false });
+      whitelist.splice(0, 1, "drop");
+      const req: any = { headers: {}, query: { keep: ["1", "2"], drop: ["3", "4"] } };
+
+      const next = run(mw, req);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.query).toEqual({ keep: ["1", "2"], drop: "4" });
+      expect(req.queryPolluted).toEqual({ drop: ["3", "4"] });
+    });
+
+    describe("exported DEFAULT_SOURCES", () => {
+      const original = [...DEFAULT_SOURCES];
+      afterEach(() => {
+        DEFAULT_SOURCES.splice(0, DEFAULT_SOURCES.length, ...original);
+      });
+
+      test("an invalid entry added before creation fails closed with the sources TypeError", () => {
+        (DEFAULT_SOURCES as string[]).push("cookies");
+        const create = () => hppx({ logPollution: false });
+
+        expect(create).toThrow(TypeError);
+        expect(create).toThrow("sources must only contain 'query', 'body', or 'params'");
+      });
+
+      test("a change made after creation does not affect an existing middleware", () => {
+        const mw = hppx({ logPollution: false });
+        (DEFAULT_SOURCES as string[]).push("cookies");
+        DEFAULT_SOURCES.splice(DEFAULT_SOURCES.indexOf("params"), 1);
+        const req: any = { headers: {}, params: { id: ["1", "2"] }, cookies: { sid: ["x", "y"] } };
+
+        const next = run(mw, req);
+
+        expect(next).toHaveBeenCalledWith();
+        expect(req.params).toEqual({ id: "2" });
+        expect(req.paramsPolluted).toEqual({ id: ["1", "2"] });
+        expect(req.cookies).toEqual({ sid: ["x", "y"] });
+        expect(Object.prototype.hasOwnProperty.call(req, "cookiesPolluted")).toBe(false);
+      });
     });
   });
 
