@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import hppx, {
   sanitize,
+  DANGEROUS_KEYS,
   DEFAULT_SOURCES,
   type HppxOptions,
   type RequestSource,
@@ -1061,6 +1062,134 @@ describe("hppx - Security Features", () => {
         expect(req.cookies).toEqual({ sid: ["x", "y"] });
         expect(Object.prototype.hasOwnProperty.call(req, "cookiesPolluted")).toBe(false);
       });
+    });
+  });
+
+  describe("DANGEROUS_KEYS is read-only and cannot weaken the guards", () => {
+    const original = ["__proto__", "prototype", "constructor"];
+    afterEach(() => {
+      // Restore the exact contents through Set.prototype (bypassing any
+      // read-only facade), even when an assertion failed.
+      for (const key of [...DANGEROUS_KEYS]) {
+        if (!original.includes(key)) Set.prototype.delete.call(DANGEROUS_KEYS, key);
+      }
+      for (const key of original) Set.prototype.add.call(DANGEROUS_KEYS, key);
+    });
+
+    test("add, delete and clear throw a TypeError and leave the keys unchanged", () => {
+      const keys = DANGEROUS_KEYS as Set<string>;
+
+      expect(() => keys.add("isAdmin")).toThrow(TypeError);
+      expect(() => keys.delete("__proto__")).toThrow(TypeError);
+      expect(() => keys.clear()).toThrow(TypeError);
+      expect(() => keys.delete("__proto__")).toThrow("DANGEROUS_KEYS is read-only");
+      expect([...DANGEROUS_KEYS]).toEqual(["__proto__", "prototype", "constructor"]);
+      expect(DANGEROUS_KEYS.has("isAdmin")).toBe(false);
+      // Still a plain Set for existing readers, including deep equality.
+      expect(DANGEROUS_KEYS).toBeInstanceOf(Set);
+      expect(Object.getPrototypeOf(DANGEROUS_KEYS)).toBe(Set.prototype);
+      expect(DANGEROUS_KEYS).toEqual(new Set(["__proto__", "prototype", "constructor"]));
+      expect(DANGEROUS_KEYS.size).toBe(3);
+    });
+
+    test("removing a key through Set.prototype still leaves hppx blocking it", () => {
+      Set.prototype.delete.call(DANGEROUS_KEYS, "constructor");
+      expect(DANGEROUS_KEYS.has("constructor")).toBe(false);
+
+      const result = sanitize({ constructor: "x", "a.constructor": "y", keep: "1" } as any);
+
+      expect(result).toEqual({ a: {}, keep: "1" });
+      expect(Object.prototype.hasOwnProperty.call(result, "constructor")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(result.a, "constructor")).toBe(false);
+    });
+  });
+
+  describe("writes into hppx-built objects define own properties", () => {
+    // `Object.freeze(Object.prototype)` (a common prototype-pollution
+    // mitigation) makes every inherited method name read-only, so a plain
+    // assignment such as `out.toString = value` throws in strict mode (the
+    // "override mistake") and a request like `?toString=1` became a 500. The
+    // Jest process cannot freeze its own Object.prototype, so these tests make
+    // one inherited name read-only, and install one inherited setter, which is
+    // the same mechanism for that name.
+    let trapped: unknown[];
+    beforeEach(() => {
+      trapped = [];
+      Object.defineProperty(Object.prototype, "hppxReadOnly", {
+        value: "inherited",
+        writable: false,
+        enumerable: false,
+        configurable: true,
+      });
+      Object.defineProperty(Object.prototype, "hppxTrap", {
+        get: () => undefined,
+        set: (value: unknown) => {
+          trapped.push(value);
+        },
+        enumerable: false,
+        configurable: true,
+      });
+    });
+    afterEach(() => {
+      delete (Object.prototype as Record<string, unknown>).hppxReadOnly;
+      delete (Object.prototype as Record<string, unknown>).hppxTrap;
+    });
+
+    function run(mw: ReturnType<typeof hppx>, req: Record<string, unknown>) {
+      const next = jest.fn();
+      mw(req, {}, next);
+      return next;
+    }
+
+    test("a key named like a read-only inherited property is kept, flat and dotted", () => {
+      const flat = sanitize({ hppxReadOnly: "1" } as any);
+      const dotted = sanitize({ "hppxReadOnly.x": "2" } as any);
+
+      expect(flat).toEqual({ hppxReadOnly: "1" });
+      expect(Object.prototype.hasOwnProperty.call(flat, "hppxReadOnly")).toBe(true);
+      expect(dotted).toEqual({ hppxReadOnly: { x: "2" } });
+      expect(Object.prototype.hasOwnProperty.call(dotted, "hppxReadOnly")).toBe(true);
+    });
+
+    test("duplicates of such a key are reduced and recorded instead of failing the request", () => {
+      const mw = hppx({ logPollution: false });
+      const flat: any = { headers: {}, query: { hppxReadOnly: ["1", "2"] } };
+      const nested: any = { headers: {}, query: { hppxReadOnly: { x: ["3", "4"] } } };
+
+      const flatNext = run(mw, flat);
+      const nestedNext = run(mw, nested);
+
+      expect(flatNext).toHaveBeenCalledTimes(1);
+      expect(flatNext).toHaveBeenCalledWith();
+      expect(flat.query).toEqual({ hppxReadOnly: "2" });
+      expect(flat.queryPolluted).toEqual({ hppxReadOnly: ["1", "2"] });
+      expect(nestedNext).toHaveBeenCalledWith();
+      expect(nested.query).toEqual({ hppxReadOnly: { x: "4" } });
+      expect(nested.queryPolluted).toEqual({ hppxReadOnly: { x: ["3", "4"] } });
+    });
+
+    test("whitelist restoration into a missing subtree defines it as an own property", () => {
+      const first = hppx({ logPollution: false });
+      const second = hppx({ logPollution: false, whitelist: ["hppxReadOnly.x"] });
+      const req: any = { headers: {}, query: { hppxReadOnly: { x: ["1", "2"] } } };
+
+      const firstNext = run(first, req);
+      delete req.query.hppxReadOnly;
+      const secondNext = run(second, req);
+
+      expect(firstNext).toHaveBeenCalledWith();
+      expect(secondNext).toHaveBeenCalledWith();
+      expect(Object.prototype.hasOwnProperty.call(req.query, "hppxReadOnly")).toBe(true);
+      expect(req.query.hppxReadOnly).toEqual({ x: ["1", "2"] });
+    });
+
+    test("an inherited setter never receives request data", () => {
+      const flat = sanitize({ hppxTrap: "secret" } as any);
+      const dotted = sanitize({ "hppxTrap.x": "nested" } as any);
+
+      expect(flat).toEqual({ hppxTrap: "secret" });
+      expect(dotted).toEqual({ hppxTrap: { x: "nested" } });
+      expect(trapped).toEqual([]);
     });
   });
 
