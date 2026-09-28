@@ -38,6 +38,13 @@
 npm install hppx
 ```
 
+### Upgrading to 0.5.0
+
+Two behavior changes, both explained in the [CHANGELOG](CHANGELOG.md):
+
+- A dotted or bracketed key whose expansion would create a `$`-prefixed key (`password[$ne]`, `password.$ne`) is dropped instead of becoming `{ password: { $ne: ... } }` (FAQ 11).
+- With `trimValues: true`, strings inside arrays kept by `combine` or `whitelist` are trimmed too.
+
 ---
 
 ## Quick Start
@@ -105,8 +112,8 @@ app.get("/search", (req, res) => {
 ### Polluted Parameter Tree
 
 For each enabled source, hppx attaches a parallel `*Polluted` object to the
-request that records the original (pre-reduction) array values for any keys
-that were detected as polluted:
+request that records the original (pre-reduction, untrimmed even with
+`trimValues`) array values for any keys that were detected as polluted:
 
 | Source   | Cleaned data on `req` | Polluted tree on `req` |
 | -------- | --------------------- | ---------------------- |
@@ -159,14 +166,14 @@ Creates an Express-compatible middleware. Applies sanitization to each selected 
 
 **Behavior & Callbacks:**
 
-| Option                | Type                              | Default | Description                                                                                                                                                                                              |
-| --------------------- | --------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `trimValues`          | `boolean`                         | `false` | Trim whitespace from string values.                                                                                                                                                                      |
-| `preserveNull`        | `boolean`                         | `true`  | Preserve `null` values in the output.                                                                                                                                                                    |
-| `strict`              | `boolean`                         | `false` | Immediately respond with HTTP 400 when pollution is detected. Response includes `error`, `message`, `pollutedParameters`, and `code` (`"HPP_DETECTED"`) fields.                                          |
-| `onPollutionDetected` | `(req, info) => void`             | —       | Callback fired on pollution detection. Called **once per polluted source** (e.g., fires twice if both query and body are polluted). `info` contains `{ source: RequestSource, pollutedKeys: string[] }`. |
-| `logger`              | `(err: Error \| unknown) => void` | —       | Custom logger for errors and pollution warnings. Receives `string` for pollution warnings and `Error` for caught errors. Falls back to `console.warn`/`console.error` if the logger throws.              |
-| `logPollution`        | `boolean`                         | `true`  | Enable automatic logging when pollution is detected.                                                                                                                                                     |
+| Option                | Type                              | Default | Description                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `trimValues`          | `boolean`                         | `false` | Trim whitespace from every string in the sanitized output, including elements of arrays kept by `combine` or `whitelist`. `req.*Polluted` keeps the original values.                                                                                                                                                                 |
+| `preserveNull`        | `boolean`                         | `true`  | Preserve `null` values in the output.                                                                                                                                                                                                                                                                                                |
+| `strict`              | `boolean`                         | `false` | Immediately respond with HTTP 400 when pollution is detected. Response includes `error`, `message`, `pollutedParameters`, and `code` (`"HPP_DETECTED"`) fields.                                                                                                                                                                      |
+| `onPollutionDetected` | `(req, info) => void`             | —       | Callback fired on pollution detection. Called **once per polluted source** (e.g., fires twice if both query and body are polluted). `info` contains `{ source: RequestSource, pollutedKeys: string[] }`.                                                                                                                             |
+| `logger`              | `(err: Error \| unknown) => void` | —       | Custom logger for errors and pollution warnings. Receives `string` for pollution warnings and `Error` for caught errors. Falls back to `console.warn`/`console.error` if the logger throws. Without a `logger`, pollution warnings go to `console.warn` and hppx does not log errors itself (see [Error Handling](#error-handling)). |
+| `logPollution`        | `boolean`                         | `true`  | Enable automatic logging when pollution is detected.                                                                                                                                                                                                                                                                                 |
 
 ---
 
@@ -219,7 +226,9 @@ const clean = sanitize(payload, {
 
 ### Exported Types
 
-All types are available for both ESM and CommonJS consumers:
+All types are available for both ESM and CommonJS consumers. CommonJS projects on TypeScript 7
+need hppx 0.5.0 or later: earlier declarations relied on a leniency that TypeScript 7 removed, so
+named imports such as `import { sanitize } from "hppx"` failed there.
 
 ```typescript
 import type {
@@ -236,10 +245,16 @@ import type {
 ```typescript
 import { DANGEROUS_KEYS, DEFAULT_SOURCES, DEFAULT_STRATEGY } from "hppx";
 
-DANGEROUS_KEYS; // ReadonlySet<string>: "__proto__", "prototype", "constructor" (add/delete/clear throw)
+DANGEROUS_KEYS; // ReadonlySet<string>: "__proto__", "prototype", "constructor" (a copy for inspection)
 DEFAULT_SOURCES; // ["query", "body", "params"]
 DEFAULT_STRATEGY; // "keepLast"
 ```
+
+> **Note:** `DANGEROUS_KEYS` is a copy of the keys hppx blocks. Its own `add`, `delete` and `clear`
+> throw a `TypeError`, but JavaScript cannot freeze the contents of a `Set`: calling
+> `Set.prototype.delete` or `Set.prototype.add` on it directly still changes the copy. That never
+> affects hppx, whose guards use a private list, so treat the export as information and do not
+> build your own security checks on it.
 
 ---
 
@@ -292,6 +307,41 @@ app.use(
 app.use(hppx({ logPollution: false }));
 ```
 
+### Error Handling
+
+hppx passes an error to `next(err)` when a request exceeds `maxDepth` or `maxKeys`, and when
+anything else fails while it processes a request (a thrown value that is not an `Error` is wrapped
+in one). Invalid options never reach a request: they throw a `TypeError` when `hppx()` is called.
+
+- hppx logs these errors only through `logger`. Without one it writes nothing, and the error
+  handler that receives the error decides: Express's default handler logs it (outside
+  `NODE_ENV=test`), and a custom handler should log it itself. Logging in both places would write
+  every error twice.
+- They are plain `Error` objects without a `status`, so Express answers 500 unless your handler maps
+  them. The limit errors are caused by the request, so a 400 is usually the better answer:
+
+```typescript
+import type { ErrorRequestHandler } from "express";
+
+const hppLimitErrors: ErrorRequestHandler = (err, _req, res, next) => {
+  if (
+    err instanceof Error &&
+    /^Maximum (object depth|key count) \([^)]*\) exceeded$/.test(err.message)
+  ) {
+    res.status(400).json({ error: "Bad Request" });
+    return;
+  }
+  next(err);
+};
+
+app.use(hppx({ maxDepth: 10, maxKeys: 500 }));
+// ... routes ...
+app.use(hppLimitErrors);
+```
+
+Sources processed before the failing one are already sanitized on `req` (see the in-order commit
+note under Security Limits).
+
 ### Multi-Middleware Stacking
 
 hppx supports incremental whitelisting across multiple middleware instances. Each subsequent middleware applies its own whitelist to the already-collected polluted data:
@@ -330,6 +380,11 @@ The options ignored on subsequent middleware (per-source) are:
 - `onPollutionDetected`, `logger`, `logPollution`
 - `excludePaths` is checked per-instance (independent of the processed flag), but
   if the source was already processed, only whitelist restoration runs.
+
+Whitelisted values that a later instance restores follow the **first** instance's `trimValues`:
+they are trimmed when the instance that processed the source trims, and left as they arrived
+otherwise. (If the request object refuses the internal flag that records the setting, restored
+values stay untrimmed.)
 
 **Footgun example:**
 
@@ -380,19 +435,20 @@ app.use(
 
 ### What hppx Protects Against
 
-| Threat                           | Protection                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Parameter pollution**          | Duplicate parameters, including a parameter repeated under alternate key spellings, are reduced to a single value via the chosen merge strategy                                                                                                                                                                                                                                    |
-| **Alternate-syntax duplicates**  | Spellings that expand to the same key (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined and reported as duplicates, so `strict` mode rejects them. A structural conflict (one spelling assigns a value directly to a key, another nests keys under it) is not reported and replaces the earlier value, which is then not combined with later spellings of that key (FAQ 9) |
-| **Prototype pollution**          | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level, from a private list that other code cannot change (the exported `DANGEROUS_KEYS` is a read-only copy)                                                                                                                                                                                          |
-| **DoS via deep nesting**         | `maxDepth` limit throws error on excessive nesting                                                                                                                                                                                                                                                                                                                                 |
-| **DoS via key flooding**         | `maxKeys` limit throws error when key count is exceeded                                                                                                                                                                                                                                                                                                                            |
-| **DoS via large arrays**         | `maxArrayLength` truncates arrays before processing                                                                                                                                                                                                                                                                                                                                |
-| **DoS via long keys**            | `maxKeyLength` silently drops excessively long keys                                                                                                                                                                                                                                                                                                                                |
-| **Null-byte injection**          | Keys containing `\u0000` are silently dropped                                                                                                                                                                                                                                                                                                                                      |
-| **Control / bidi key chars**     | Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`) or Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, BOM) are dropped                                                                                                                                                                                         |
-| **Frozen or poisoned prototype** | hppx writes own data properties, so `Object.freeze(Object.prototype)` or an inherited setter cannot make a key such as `toString` fail the request or divert its value (with Express's default query parser; FAQ 10)                                                                                                                                                               |
-| **Malformed keys**               | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped                                                                                                                                                                                                                                                                                                          |
+| Threat                            | Protection                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Parameter pollution**           | Duplicate parameters, including a parameter repeated under alternate key spellings, are reduced to a single value via the chosen merge strategy                                                                                                                                                                                                                                    |
+| **Alternate-syntax duplicates**   | Spellings that expand to the same key (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined and reported as duplicates, so `strict` mode rejects them. A structural conflict (one spelling assigns a value directly to a key, another nests keys under it) is not reported and replaces the earlier value, which is then not combined with later spellings of that key (FAQ 9) |
+| **Prototype pollution**           | `__proto__`, `constructor`, `prototype` keys are blocked at every processing level, from a private list that other code cannot change (the exported `DANGEROUS_KEYS` is a copy for inspection)                                                                                                                                                                                     |
+| **`$` keys created by expansion** | Key expansion never creates a key that starts with `$`: `password[$ne]=x` or `password.$ne=x` is dropped instead of becoming `{ password: { $ne: "x" } }`. Keys that the parser or a JSON body already nested are passed through (FAQ 11)                                                                                                                                          |
+| **DoS via deep nesting**          | `maxDepth` limit throws error on excessive nesting                                                                                                                                                                                                                                                                                                                                 |
+| **DoS via key flooding**          | `maxKeys` limit throws error when key count is exceeded                                                                                                                                                                                                                                                                                                                            |
+| **DoS via large arrays**          | `maxArrayLength` truncates arrays before processing                                                                                                                                                                                                                                                                                                                                |
+| **DoS via long keys**             | `maxKeyLength` silently drops excessively long keys                                                                                                                                                                                                                                                                                                                                |
+| **Null-byte injection**           | Keys containing `\u0000` are silently dropped                                                                                                                                                                                                                                                                                                                                      |
+| **Control / bidi key chars**      | Keys containing ASCII / C1 control characters (`\x00`-`\x1F`, `\x7F`-`\x9F`) or Unicode bidirectional override characters (LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, BOM) are dropped                                                                                                                                                                                         |
+| **Frozen or poisoned prototype**  | hppx writes own data properties, so `Object.freeze(Object.prototype)` or an inherited setter cannot make a key such as `toString` fail the request or divert its value (with Express's default query parser; FAQ 10)                                                                                                                                                               |
+| **Malformed keys**                | Keys consisting only of dots/brackets (e.g., `"..."`, `"[["`) are dropped                                                                                                                                                                                                                                                                                                          |
 
 ### Production Configuration
 
@@ -440,6 +496,13 @@ hppx is not a complete security solution. You still need:
 - **Authentication/Authorization** — validate user permissions
 - **Rate limiting** — prevent brute-force attacks
 - **Input validation** — use schema validation libraries (Joi, Yup, Zod) alongside hppx
+- **NoSQL / ORM operator injection**: any parameter can still arrive as an object. Express's
+  `extended` query parser nests `password[$ne]` itself, a JSON body can send
+  `{ "password": { "$ne": "x" } }` directly, and hppx expands keys without a `$` (`id[not]=0` becomes
+  `{ id: { not: "0" } }`). Validate and cast every value before it reaches a query (a schema, or
+  `String(req.query.email)`). With Mongoose,
+  [`sanitizeFilter`](https://mongoosejs.com/docs/api/mongoose.html) wraps objects with `$`-prefixed
+  keys in `$eq`, and `mongoose.trusted()` marks the operators your own code adds
 
 ---
 
@@ -492,8 +555,8 @@ ignored when passed to `sanitize()`.
 These two concerns are deliberately independent:
 
 - **`whitelist`** controls what happens _after_ reduction. Whitelisted keys have their raw
-  arrays moved back from the polluted tree into `req.query` (etc.) and are pruned from
-  `req.queryPolluted`. The route handler sees the original multi-value array for whitelisted
+  arrays (with their strings trimmed when `trimValues` is on) moved back from the polluted tree
+  into `req.query` (etc.) and are pruned from `req.queryPolluted`. The route handler sees the original multi-value array for whitelisted
   keys — they are not further reduced.
 - **`strict`** and **`logPollution`** are driven by pre-restoration data — the `pollutedKeys`
   set returned by `detectAndReduce` captures every parameter that arrived duplicated on the
@@ -581,6 +644,26 @@ writes each key of the objects it builds as an own data property, the way `JSON.
 request failed with a `TypeError` (a 500 in Express) whenever `Object.prototype` was frozen.
 This covers hppx's own processing: Express's `extended` query parser (`qs`) makes the same
 assignment itself and fails before hppx runs, while the default `simple` parser does not.
+
+**11. Key expansion never creates `$` operator keys.**
+MongoDB and similar stores read keys that start with `$` as query operators. Express 5's default
+`simple` query parser delivers `?password[$ne]=x` as the flat key `"password[$ne]"`, harmless on its
+own, so hppx drops every dotted or bracketed key whose expansion would contain a segment starting
+with `$` (`password[$ne]`, `password.$ne`, `user[role][$in]`, `[$ne]`, `$where.`) before any part of
+it is written. Versions before 0.5.0 turned it into `{ password: { $ne: "x" } }`.
+
+- This applies to every source and to `sanitize()`. A dropped key is not reported as pollution (no
+  `*Polluted` entry, no `strict` rejection), just as with the blocked prototype keys.
+- Only a leading `$` counts: `a[b$]` is expanded as usual.
+- Keys that expansion does not create are left alone: a flat `$top` or `$filter` (OData-style
+  parameters), and operators that the `extended` parser or a JSON body already nested
+  (`?password[$ne]=x` under `extended` still gives `{ password: { $ne: "x" } }`; see "What hppx Does
+  NOT Protect Against").
+- FAQ 9 treats `a` and `a[]` as one parameter. For `$` names that no longer holds: under the
+  default `simple` parser, `?$top=1&$top[]=2` drops `$top[]` and `$top` stays `"1"` (the
+  `extended` parser merges both spellings into an array itself).
+- If you rely on operator syntax in query strings, use the `extended` parser, which nests brackets
+  itself, and validate the result.
 
 ---
 

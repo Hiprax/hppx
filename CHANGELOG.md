@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.5.0 - $-key-safe expansion, TypeScript 7 CommonJS types & array trimming (2026-09-28)
+
+A minor release with two behavior changes: key expansion no longer creates `$`-prefixed keys (a
+NoSQL-injection risk), and `trimValues` now trims strings inside arrays. It also fixes the
+CommonJS type declarations for TypeScript 7 and documents the `DANGEROUS_KEYS` and error-logging
+contracts. No API changes.
+
+### Breaking
+
+- **Key expansion no longer creates `$`-prefixed keys.** hppx expands dotted and bracketed keys
+  into nested objects. Express 5's default `simple` query parser delivers `?password[$ne]=x` as the
+  flat, harmless key `"password[$ne]"`, and hppx turned it into `{ password: { $ne: "x" } }`, a
+  MongoDB operator: any handler that passes a value to a query
+  (`User.findOne({ password: req.query.password })`) was open to NoSQL injection. The same
+  happened to dotted spellings (`password.$ne=x`) under both query parsers, to the literal
+  `[$ne]` key that `qs` leaves past its depth limit, to urlencoded bodies parsed with
+  `extended: false`, to flat keys in JSON bodies (with `checkBodyContentType: "any"`), and in
+  `sanitize()`; a spelling such as `a[$ne]=3` could also replace a duplicated `a` and so pass
+  `strict` mode. A key whose expansion would contain a segment starting with `$` is now dropped
+  before any part of it is written (`src/index.ts`, `hasOperatorSegment`, `expandObjectPaths`).
+  Flat `$` keys (`$top`, `$filter`) and operators that the `extended` parser or a JSON body already
+  nested pass through unchanged, and a dropped key is not reported as pollution. **Migration:** if
+  you relied on bracket or dot operator syntax under the `simple` parser (for example
+  Feathers-style `field[$in]=a`), switch to the `extended` parser, which nests brackets itself, and
+  validate the result (README FAQ 11). hppx is still not a NoSQL sanitizer: validate and cast input.
+- **`trimValues` trims strings inside arrays.** It trimmed only direct values, so elements of
+  arrays kept by `combine`, nested arrays and whitelisted arrays stayed untrimmed
+  (`?w=%20b%20&w=%20c%20` with `whitelist: ["w"]` gave `[" b ", " c "]`). Every string written to
+  the sanitized output is now trimmed, including strings in whitelisted arrays of objects, while
+  `req.*Polluted` keeps the original values (`src/index.ts`, `detectAndReduce`, `trimStringsDeep`,
+  `moveWhitelistedFromPolluted`). Stacked instances restore whitelisted values with the first
+  instance's `trimValues`, recorded in a hidden, read-only `__hppxTrimValues_<source>` flag, which
+  keeps the README "Option Precedence" rules true (`setInternalFlag`). **Migration:** nothing
+  changes with `trimValues: false` (the default); with it on, expect trimmed array elements.
+
+### Fixed
+
+- **CommonJS type declarations work with TypeScript 7.** `dist/index.d.cts` placed the named
+  exports next to `export = hppx` behind `// @ts-ignore` (written by tsup's `cjsInterop` option).
+  TypeScript never allowed that combination (TS2309); TypeScript 6 tolerated it and TypeScript 7
+  does not, so in a CommonJS project `import { sanitize } from "hppx"` failed with TS2305,
+  `hppx.sanitize` with TS2339, and `const { sanitize } = require("hppx")` in a checked JavaScript
+  file failed too. `dist/index.d.cts` is now derived from `dist/index.d.ts`, with the named exports
+  in a namespace merged with the function and `export = hppx` last, which is exactly what
+  `require("hppx")` returns. It also types the `default` property the CommonJS build has always
+  had (`scripts/_cjs-dts.mjs`, `scripts/write-cjs-dts.mjs`, and `cjsInterop: false` in
+  `tsup.config.ts`, which leaves the JavaScript output byte-identical). The ESM declarations are
+  unchanged.
+
+### Documentation
+
+- `DANGEROUS_KEYS` is described as what it is: a copy for inspection whose own `add`, `delete`
+  and `clear` throw. JavaScript cannot freeze a `Set`'s contents, so
+  `Set.prototype.delete.call(DANGEROUS_KEYS, ...)` still changes the copy; hppx's guards read a
+  private list and are unaffected (README, `src/index.ts`).
+- New README "Error Handling" section: hppx logs a forwarded error only through `logger`; without
+  one, the error handler that receives it decides (Express's default handler logs it outside
+  `NODE_ENV=test`), and a default log in hppx would log every error twice. Limit errors carry no
+  `status`, so they become a 500 unless mapped; an example maps them to 400. The `logger` option
+  row says the same.
+- README: FAQ 11 on `$` keys, an "Upgrading to 0.5.0" note, a security-table row, NoSQL/ORM
+  operator injection under "What hppx Does NOT Protect Against" (validate and cast; Mongoose
+  `sanitizeFilter` and `mongoose.trusted()`), the `trimValues` option row, the TypeScript 7 note,
+  and the stacked-instance `trimValues` rule.
+
+### Build
+
+- `npm run build` runs tsup, then `scripts/write-cjs-dts.mjs`. `npm run check-dts` now also rejects
+  a `.d.cts` that silences the compiler or places exports next to `export =`
+  (`scripts/check-dts-parity.mjs`), and compiles CommonJS (`.cts`, and `.cjs` with `checkJs`) and
+  ESM (`.mts`) consumer files against the built declarations with the project's TypeScript
+  (`scripts/check-dts-consumers.mjs`: in memory, `skipLibCheck: false`, with `@ts-expect-error`
+  lines for misuse). No workflow changes: CI, `prepare` and `release.yml` already run both
+  scripts. `npm run dev` (tsup watch) still writes an ESM-shaped `.d.cts`; only `npm run build`
+  output is published.
+
+### Tests
+
+- 47 new tests, 372 in total across 14 suites: `tests/hppx.operator-keys.test.ts` (`sanitize()`
+  and Express 5 with both query parsers, urlencoded bodies, the `qs` depth overflow, strict mode,
+  pollution reporting and the scope limits), `tests/hppx.trim-values.test.ts` (combined, nested and
+  whitelisted arrays, the polluted tree kept original, stacked instances, the hidden flag, and a
+  polluted tree tampered with between instances), `tests/scripts.cjs-dts.test.ts` (the
+  declaration transform and each input it rejects), and in `tests/hppx.security.test.ts` a
+  `DANGEROUS_KEYS` test for keys added through `Set.prototype` and a test that a forwarded error
+  is not logged without `logger`. Each test of a changed behavior was observed failing before its
+  fix (six negative controls pass on both trees by design, and the `DANGEROUS_KEYS` and logging
+  tests pin behavior that did not change), and each guarded mechanism was broken once to confirm
+  a test turns red.
+- Coverage floor raised to 99.77% statements and 96.16% branches in `jest.config.ts`.
+
+### Verified
+
+- TypeScript 7.0.2 and 6.0.3 compile CommonJS (`.cts`, `.cjs`) and ESM consumers of the packed
+  tarball with 0 errors (0.4.0: 15 errors on TypeScript 7.0.2, including TS2305 on every named
+  import); `attw --pack` reports no problems.
+- `npm run verify`: all 7 gates pass on Node 24.19.0 and Node 18.20.8; `npm test`: 372/372;
+  `npm audit`: 0 vulnerabilities.
+
 ## v0.4.0 — Read-only DANGEROUS_KEYS, frozen-prototype support & trusted publishing (2026-09-25)
 
 A minor release because the exported `DANGEROUS_KEYS` is now read-only: code that called

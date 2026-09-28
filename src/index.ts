@@ -70,7 +70,7 @@ const DEFAULT_STRATEGY: MergeStrategy = "keepLast";
 /**
  * Keys that are never written, at any depth. Every guard reads this private
  * set, so no other code in the process can weaken them; the exported
- * `DANGEROUS_KEYS` is a read-only copy for inspection.
+ * `DANGEROUS_KEYS` is a copy for inspection (see `readOnlySetOf`).
  */
 const BLOCKED_KEYS: ReadonlySet<string> = new Set(["__proto__", "prototype", "constructor"]);
 
@@ -78,6 +78,9 @@ const BLOCKED_KEYS: ReadonlySet<string> = new Set(["__proto__", "prototype", "co
  * A frozen, plain `Set` copy of `keys` whose `add`, `delete` and `clear` are
  * own methods that throw. It stays a plain `Set` (same prototype), so
  * `instanceof`, iteration and deep equality with another `Set` behave as before.
+ * JavaScript cannot freeze a `Set`'s contents: `Set.prototype.add`, `delete`
+ * or `clear` called on the copy directly still change it. That never affects
+ * hppx, whose guards read `BLOCKED_KEYS`; the copy is for inspection only.
  */
 function readOnlySetOf(keys: Iterable<string>): ReadonlySet<string> {
   const set = new Set(keys);
@@ -183,7 +186,9 @@ const pathSegmentCache = new Map<string, string[]>();
  *      against the blocked keys (`BLOCKED_KEYS`) when it is written (by `setInExpanded` for
  *      intermediate segments and `assignExpanded` for the leaf, the same
  *      guard `setIn` applies to the paths it writes); segments are not re-run
- *      through `sanitizeKey`. Different spellings that parse to the same path
+ *      through `sanitizeKey`. A key with a `$`-prefixed segment is dropped
+ *      before expansion (`hasOperatorSegment`), so expansion cannot create a
+ *      MongoDB-style operator key. Different spellings that parse to the same path
  *      (`a` / `a[]` / `a.` / `[a]`, `a.b` / `a[b]`) are combined as duplicates
  *      by `expandObjectPaths`. A structural conflict (one spelling nests keys
  *      under a path that another spelling assigns a value to) still resolves
@@ -351,6 +356,20 @@ function setInExpanded(
   assignExpanded(cur, path[path.length - 1]!, value, owned);
 }
 
+/**
+ * True when a parsed key path has a segment that starts with `$`. Key
+ * expansion never creates such a key: MongoDB and similar stores read
+ * `$`-prefixed keys as query operators, so turning the flat key
+ * `password[$ne]` (how Express 5's default parser delivers it) into
+ * `{ password: { $ne: ... } }` would hand an operator to any code that passes
+ * the value to a query. Keys the input already contains (a flat `$top`, or an
+ * operator nested by the `extended` parser or a JSON body) are left as they
+ * are: hppx did not create them.
+ */
+function hasOperatorSegment(segments: readonly string[]): boolean {
+  return segments.some((segment) => segment.startsWith("$"));
+}
+
 function expandObjectPaths(
   obj: Record<string, unknown>,
   maxKeyLength?: number,
@@ -373,6 +392,11 @@ function expandObjectPaths(
     for (const rawKey of Object.keys(obj)) {
       const safeKey = sanitizeKey(rawKey, maxKeyLength);
       if (!safeKey) continue;
+      const segments =
+        safeKey.includes(".") || safeKey.includes("[") ? parsePathSegments(safeKey) : undefined;
+      // A key whose expansion would create a `$`-prefixed key is dropped as a
+      // whole, before its value is read or expanded, so nothing of it is written.
+      if (segments && hasOperatorSegment(segments)) continue;
       const value = obj[rawKey];
 
       // Recursively expand nested objects first
@@ -387,12 +411,9 @@ function expandObjectPaths(
           )
         : value;
 
-      if (safeKey.includes(".") || safeKey.includes("[")) {
-        const segments = parsePathSegments(safeKey);
-        if (segments.length > 0) {
-          setInExpanded(result, segments, expandedValue, owned);
-          continue;
-        }
+      if (segments && segments.length > 0) {
+        setInExpanded(result, segments, expandedValue, owned);
+        continue;
       }
       assignExpanded(result, safeKey, expandedValue, owned);
     }
@@ -478,6 +499,30 @@ function setReqPropertySafe(
         onFailure(`[hppx] Could not write sanitized value to req.${key}: defineProperty failed.`);
       }
       return false;
+    }
+  }
+}
+
+/**
+ * Sets an internal `__hppx*` flag on the request: a non-enumerable,
+ * non-writable, non-configurable own property, invisible to serializers and
+ * spreads. If `req` refuses `defineProperty` (for example a frozen request),
+ * plain assignment is tried so the flag holds for the current request; if
+ * that fails too, the flag is skipped.
+ */
+function setInternalFlag(req: Record<string, unknown>, key: string): void {
+  try {
+    Object.defineProperty(req, key, {
+      value: true,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
+  } catch (_) {
+    try {
+      req[key] = true;
+    } catch (_assignErr) {
+      // Last resort: skip.
     }
   }
 }
@@ -678,10 +723,35 @@ function setIn(target: Record<string, unknown>, path: string[], value: unknown):
   defineOwn(cur, lastKey, value);
 }
 
+/**
+ * Returns a copy of `value` with every string trimmed, at any depth of arrays
+ * and plain objects; other values are returned as they are. Used for
+ * whitelisted values restored with `trimValues`, so the polluted tree they
+ * come from keeps the original strings. Dangerous keys are never copied (the
+ * tree could have been changed by other code between stacked instances). No
+ * cycle guard, as in `moveWhitelistedFromPolluted`'s walk: the polluted tree
+ * hppx builds is acyclic (see `detectAndReduce`), and a cycle planted by other
+ * in-process code surfaces as a `RangeError` passed to `next(err)`.
+ */
+function trimStringsDeep(value: unknown): unknown {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(trimStringsDeep);
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value)) {
+      if (BLOCKED_KEYS.has(k)) continue;
+      defineOwn(out, k, trimStringsDeep(value[k]));
+    }
+    return out;
+  }
+  return value;
+}
+
 function moveWhitelistedFromPolluted(
   reqPart: Record<string, unknown>,
   polluted: Record<string, unknown>,
   isWhitelisted: (path: string[]) => boolean,
+  trimValues: boolean,
 ): void {
   function walk(node: Record<string, unknown>, path: string[] = []) {
     for (const k of Object.keys(node)) {
@@ -700,7 +770,7 @@ function moveWhitelistedFromPolluted(
           const normalizedPath = curPath.flatMap((seg) =>
             seg.includes(".") ? seg.split(".") : [seg],
           );
-          setIn(reqPart, normalizedPath, v);
+          setIn(reqPart, normalizedPath, trimValues ? trimStringsDeep(v) : v);
           delete node[k];
         }
       }
@@ -758,6 +828,12 @@ function detectAndReduce(
   // cycles that the upfront clone already broke.
   const cloned = safeDeepClone(input, opts.maxKeyLength, opts.maxArrayLength, opts.maxDepth);
 
+  // With trimValues, every string written into the cleaned output (an object
+  // property or an array element, at any depth) is trimmed. The polluted tree
+  // records `cloned` nodes, which keep the original strings.
+  const trimIfString = (value: unknown): unknown =>
+    opts.trimValues && typeof value === "string" ? value.trim() : value;
+
   function processNode(node: unknown, path: string[] = [], depth = 0, inArray = false): unknown {
     if (node === null) return opts.preserveNull ? null : undefined;
     if (node === undefined) return node;
@@ -772,7 +848,7 @@ function detectAndReduce(
       // inner arrays at the same `path` as the outer one); in that case we
       // skip the redundant `setIn` / `pollutedKeys.push` so consumers of
       // `pollutedKeys` and `pollutedTree` see one entry per affected leaf.
-      const mapped = node.map((v) => processNode(v, path, depth, true));
+      const mapped = node.map((v) => trimIfString(processNode(v, path, depth, true)));
       if (!inArray) {
         // Record pollution for ALL strategies (including combine). The combined
         // output remains the cleaned value, but the security signal — polluted
@@ -807,9 +883,7 @@ function detectAndReduce(
         const childPath = path.concat([safeKey]);
         // Walking into an object key resets `inArray` — each key starts a fresh
         // path under which a new array site can record pollution exactly once.
-        let value = processNode(child, childPath, depth + 1, false);
-        if (typeof value === "string" && opts.trimValues) value = value.trim();
-        defineOwn(out, safeKey, value);
+        defineOwn(out, safeKey, trimIfString(processNode(child, childPath, depth + 1, false)));
       }
       return out;
     }
@@ -855,7 +929,7 @@ export function sanitize<T extends Record<string, unknown>>(
   });
 
   // Second: move back whitelisted arrays
-  moveWhitelistedFromPolluted(cleaned, pollutedTree, isWhitelistedPath);
+  moveWhitelistedFromPolluted(cleaned, pollutedTree, isWhitelistedPath, trimValues);
 
   return cleaned as T;
 }
@@ -1090,6 +1164,7 @@ export default function hppx(options: HppxOptions = {}) {
 
         const pollutedKey = `${source}Polluted`;
         const processedKey = `__hppxProcessed_${source}`;
+        const trimKey = `__hppxTrimValues_${source}`;
         // Use hasOwnProperty.call to avoid prototype-chain traversal — protects against
         // upstream prototype pollution gadgets that set `Object.prototype.__hppxProcessed_*`.
         const hasProcessedBefore = Object.prototype.hasOwnProperty.call(req, processedKey);
@@ -1124,29 +1199,19 @@ export default function hppx(options: HppxOptions = {}) {
           // while remaining readable by name — consistent with __hppxProcessed_*.
           setReqPropertySafe(req, pollutedKey, pollutedTree, warn, false);
           // Mark as processed in a tamper-resistant, non-enumerable way so it is not
-          // visible to user code, response serializers, or attackers.
-          try {
-            Object.defineProperty(req, processedKey, {
-              value: true,
-              writable: false,
-              configurable: false,
-              enumerable: false,
-            });
-          } catch (_) {
-            // If req is frozen or defineProperty otherwise fails, fall back to assignment
-            // so behavior is at least correct for the current request.
-            try {
-              req[processedKey] = true;
-            } catch (_assignErr) {
-              // Last resort: skip; downstream middleware will simply re-process.
-            }
-          }
+          // visible to user code, response serializers, or attackers. If the flag
+          // cannot be written at all, downstream middleware simply re-processes.
+          setInternalFlag(req, processedKey);
+          // Later instances restore whitelisted values with this instance's
+          // trimValues, since this instance processed the source. If the flag
+          // cannot be written, they restore the original, untrimmed values.
+          if (trimValues) setInternalFlag(req, trimKey);
 
           // Apply whitelist now: move whitelisted arrays back
           const sourceData = req[source];
           const pollutedData = req[pollutedKey];
           if (isPlainObject(sourceData) && isPlainObject(pollutedData)) {
-            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath);
+            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath, trimValues);
           }
 
           if (pollutedKeys.length > 0) {
@@ -1154,11 +1219,15 @@ export default function hppx(options: HppxOptions = {}) {
             for (const k of pollutedKeys) allPollutedKeys.push(`${source}.${k}`);
           }
         } else {
-          // Subsequent middleware: only put back whitelisted entries
+          // Subsequent middleware: only put back whitelisted entries, trimmed
+          // when the instance that processed the source trims (own property
+          // only, so a polluted Object.prototype cannot switch it on).
           const sourceData = req[source];
           const pollutedData = req[pollutedKey];
           if (isPlainObject(sourceData) && isPlainObject(pollutedData)) {
-            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath);
+            const trimRestored =
+              Object.prototype.hasOwnProperty.call(req, trimKey) && req[trimKey] === true;
+            moveWhitelistedFromPolluted(sourceData, pollutedData, isWhitelistedPath, trimRestored);
           }
           // pollution already accounted for in previous pass
         }
@@ -1214,7 +1283,10 @@ export default function hppx(options: HppxOptions = {}) {
 
       return next();
     } catch (err) {
-      // Enhanced error handling with detailed logging
+      // hppx logs a caught error only through a configured `logger`; either
+      // way it is passed to `next(error)`, and the error handler that receives
+      // it decides whether to log (Express's default handler does, outside
+      // NODE_ENV=test). Logging here as well would log every error twice.
       const error = err instanceof Error ? err : new Error(String(err));
 
       if (logger) {

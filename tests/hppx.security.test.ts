@@ -553,6 +553,33 @@ describe("hppx - Security Features", () => {
       expect(errors[0]).toBeInstanceOf(Error);
     });
 
+    test("without a logger, hppx does not log a forwarded error; next() receives it unchanged", () => {
+      // Documented contract: the error handler that receives next(err) decides
+      // whether to log (Express's default handler does, outside NODE_ENV=test).
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const query = { a: "1", b: "2", c: "3" };
+      const req: any = { headers: {}, query };
+      const next = jest.fn();
+
+      // logPollution keeps its default (true): it governs pollution warnings only.
+      hppx({ maxKeys: 2 })(req, {}, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const err = next.mock.calls[0]?.[0];
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe("Maximum key count (2) exceeded");
+      expect(err).not.toHaveProperty("status");
+      expect(err).not.toHaveProperty("statusCode");
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+      // The failing source is left exactly as it arrived.
+      expect(req.query).toBe(query);
+      expect(req.query).toEqual({ a: "1", b: "2", c: "3" });
+      expect(Object.prototype.hasOwnProperty.call(req, "queryPolluted")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(req, "__hppxProcessed_query")).toBe(false);
+    });
+
     test("error is passed to next middleware", async () => {
       const app = express();
       app.use(hppx({ maxDepth: 1, logPollution: false }));
@@ -1101,6 +1128,25 @@ describe("hppx - Security Features", () => {
       expect(result).toEqual({ a: {}, keep: "1" });
       expect(Object.prototype.hasOwnProperty.call(result, "constructor")).toBe(false);
       expect(Object.prototype.hasOwnProperty.call(result.a, "constructor")).toBe(false);
+    });
+
+    test("adding a key through Set.prototype does not make hppx block it", () => {
+      // JavaScript cannot freeze a Set's contents, so the exported copy itself
+      // does change; the guards read the private list and are unaffected.
+      Set.prototype.add.call(DANGEROUS_KEYS, "isAdmin");
+      expect(DANGEROUS_KEYS.has("isAdmin")).toBe(true);
+
+      // Top-level and nested keys (sanitizeKey, assignExpanded) and an
+      // intermediate segment of a dotted key (setInExpanded).
+      expect(sanitize({ isAdmin: "1", user: { isAdmin: "2" }, "profile.isAdmin.x": "3" })).toEqual({
+        isAdmin: "1",
+        user: { isAdmin: "2" },
+        profile: { isAdmin: { x: "3" } },
+      });
+      // Polluted-tree recording and whitelist restoration (setIn).
+      expect(sanitize({ isAdmin: ["a", "b"] }, { whitelist: ["isAdmin"] })).toEqual({
+        isAdmin: ["a", "b"],
+      });
     });
   });
 

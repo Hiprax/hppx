@@ -1,6 +1,6 @@
 {
   "name": "hppx",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Superior HTTP Parameter Pollution protection middleware with modern TypeScript, robust sanitizer, and extensive tests.",
   "license": "MIT",
   "author": "Hiprax",
@@ -41,14 +41,14 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/write-cjs-dts.mjs",
     "clean": "rimraf dist",
     "dev": "tsup --watch",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:watch": "jest --watch --coverage=false",
     "prepare": "npm run build && npm run check-dts",
-    "check-dts": "node scripts/check-dts-parity.mjs",
+    "check-dts": "node scripts/check-dts-parity.mjs && node scripts/check-dts-consumers.mjs",
     "check-types-pack": "attw --pack .",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
