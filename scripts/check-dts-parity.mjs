@@ -5,10 +5,15 @@
  *
  * Verifies that the published ESM (`dist/index.d.ts`) and CommonJS
  * (`dist/index.d.cts`) type declaration files expose the same set of public
- * symbols.
+ * symbols, and that the CommonJS file has the one legal shape for this
+ * package: `export = <name>;` as its last statement, the named exports inside
+ * a `declare namespace <name>` merged with it, and no directive that silences
+ * the compiler. TypeScript rejects `export =` next to other exports (TS2309),
+ * and TypeScript 7 ignores the `// @ts-ignore` that used to hide that.
  *
- * Why: tsup auto-generates both files from `src/index.ts`. When new exports
- * are added to `src/index.ts`, the two emitted variants can drift apart
+ * Why: tsup generates `dist/index.d.ts` from `src/index.ts`, and
+ * `scripts/write-cjs-dts.mjs` derives `dist/index.d.cts` from it. When new
+ * exports are added to `src/index.ts`, the two variants could drift apart
  * unnoticed (different naming/aliasing across module formats, missed
  * re-exports). This script is wired into the `prepare` lifecycle so that
  * any drift fails the build before publish.
@@ -25,6 +30,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { escapeRegex } from "./_lib.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -103,6 +109,58 @@ function extractExportedSymbols(source) {
 }
 
 /**
+ * Returns every way the declaration files depart from the legal CommonJS shape
+ * described in the header. An empty array means the shape is correct.
+ *
+ * @param {string} dctsSource
+ * @param {string} dtsSource
+ * @returns {string[]}
+ */
+function cjsShapeProblems(dctsSource, dtsSource) {
+  const problems = [];
+  const src = dctsSource.replace(/\r\n/g, "\n");
+  const esc = escapeRegex;
+
+  if (/@ts-(?:ignore|nocheck|expect-error)\b/.test(src)) {
+    problems.push("dist/index.d.cts contains @ts-ignore, @ts-nocheck or @ts-expect-error");
+  }
+  if (/^export\s*=/m.test(dtsSource)) {
+    problems.push("dist/index.d.ts (ESM) must not use `export =`");
+  }
+
+  const assignments = [...src.matchAll(/^export\s*=\s*([A-Za-z_$][\w$]*)\s*;/gm)];
+  if (assignments.length !== 1) {
+    problems.push(
+      `dist/index.d.cts must contain exactly one \`export = <name>;\`, found ${assignments.length}`,
+    );
+    return problems;
+  }
+  const name = assignments[0]?.[1] ?? "";
+  if (!new RegExp(`\\nexport = ${esc(name)};\\s*$`).test(src)) {
+    problems.push(`\`export = ${name};\` must be the last statement of dist/index.d.cts`);
+  }
+  const namespace = new RegExp(`^declare namespace ${esc(name)} \\{\\n([\\s\\S]*?)^\\}`, "m").exec(
+    src,
+  );
+  if (!namespace) {
+    problems.push(`dist/index.d.cts has no \`declare namespace ${name} { ... }\``);
+  } else if (!new RegExp(`\\b${esc(name)} as default\\b`).test(namespace[1] ?? "")) {
+    problems.push(
+      `the export list in \`declare namespace ${name}\` must contain \`${name} as default\``,
+    );
+  }
+  const outside = (namespace ? src.replace(namespace[0], "") : src)
+    .split("\n")
+    .filter((line) => /^export\b/.test(line) && !/^export\s*=/.test(line));
+  if (outside.length > 0) {
+    problems.push(
+      `dist/index.d.cts has top-level exports next to \`export =\`: ${outside.join(" | ")}`,
+    );
+  }
+  return problems;
+}
+
+/**
  * @param {Set<string>} a
  * @param {Set<string>} b
  * @returns {{onlyA: string[], onlyB: string[]}}
@@ -140,6 +198,16 @@ async function main() {
     );
     console.error(`[check-dts-parity] dist/index.d.ts  -> ${dtsSymbols.size} symbol(s) detected`);
     console.error(`[check-dts-parity] dist/index.d.cts -> ${dctsSymbols.size} symbol(s) detected`);
+    process.exit(1);
+  }
+
+  const shapeProblems = cjsShapeProblems(dctsSource, dtsSource);
+  if (shapeProblems.length > 0) {
+    console.error("[check-dts-parity] FAIL: dist/index.d.cts is not a legal CommonJS declaration:");
+    for (const problem of shapeProblems) console.error(`  - ${problem}`);
+    console.error(
+      "[check-dts-parity] Rebuild with `npm run build` (tsup, then scripts/write-cjs-dts.mjs) instead of running tsup alone.",
+    );
     process.exit(1);
   }
 

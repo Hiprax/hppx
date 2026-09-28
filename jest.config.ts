@@ -17,7 +17,7 @@ const config: Config = {
   coverageReporters: ["text", "lcov"],
   // Measured coverage floor (truncated to two decimals): it only ever moves up.
   coverageThreshold: {
-    global: { statements: 99.76, branches: 95.94, functions: 100, lines: 100 },
+    global: { statements: 99.77, branches: 96.16, functions: 100, lines: 100 },
   },
 };
 
