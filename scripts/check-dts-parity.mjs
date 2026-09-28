@@ -30,6 +30,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { escapeRegex } from "./_lib.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -118,7 +119,7 @@ function extractExportedSymbols(source) {
 function cjsShapeProblems(dctsSource, dtsSource) {
   const problems = [];
   const src = dctsSource.replace(/\r\n/g, "\n");
-  const esc = (/** @type {string} */ s) => s.replace(/[$]/g, "\\$");
+  const esc = escapeRegex;
 
   if (/@ts-(?:ignore|nocheck|expect-error)\b/.test(src)) {
     problems.push("dist/index.d.cts contains @ts-ignore, @ts-nocheck or @ts-expect-error");
